@@ -1,0 +1,2493 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Convex Hull Visualizer</title>
+    <style>
+        :root {
+            /* ── Base Surfaces (60%) ── */
+            --bg-base:       #0F172A;
+            /* Updated to translucent values for Apple Glassmorphism effect */
+            --bg-surface:    rgba(30, 41, 59, 0.4); 
+            --bg-elevated:   rgba(51, 65, 85, 0.5);
+
+            /* ── Border ── */
+            --border:        rgba(255, 255, 255, 0.08);
+
+            /* ── Core Accents (10%) ── */
+            --accent-blue:   #3B82F6;
+            --accent-green:  #10B981;
+            --accent-rose:   #E11D48;
+
+            /* ── Algorithm State Colors ── */
+            --state-comparing:   rgba(59, 130, 246, 0.7);
+            --state-sorted:      rgba(59, 130, 246, 0.35);
+            --state-stack-push:  rgba(16, 185, 129, 0.6);
+            --state-stack-pop:   rgba(225, 29, 72, 0.6);
+            --state-hull-final:  #10B981;
+
+            /* ── Typography Colors ── */
+            --text-primary:    #F8FAFC;
+            --text-secondary:  #94A3B8;
+
+            /* ── Typography Stacks ── */
+            @font-face {
+                font-family: 'Inter';
+                src: local('Inter'), local('Segoe UI'), local('Helvetica Neue');
+            }
+            @font-face {
+                font-family: 'JetBrains Mono';
+                src: local('JetBrains Mono'), local('Fira Code'), local('Consolas'), local('Courier New');
+            }
+            
+            --font-ui:   'Inter', system-ui, -apple-system, sans-serif;
+            --font-mono: 'JetBrains Mono', 'Fira Code', 'Consolas', monospace;
+
+            /* ── Spacing Scale ── */
+            --sp-1: 4px;   --sp-2: 8px;   --sp-3: 12px;
+            --sp-4: 16px;  --sp-5: 20px;  --sp-6: 24px;
+            --sp-8: 32px;
+
+            /* ── Radii ── */
+            --radius-sm: 6px;
+            --radius-md: 10px;
+            --radius-lg: 14px;
+
+            /* ── Transitions ── */
+            --ease-default: 200ms ease-in-out;
+            --ease-fast:    150ms ease-in-out;
+            --ease-slow:    300ms ease-in-out;
+            
+            /* ── Layout ── */
+            --panel-width: 420px;
+        }
+
+        /* Reduced Motion */
+        @media (prefers-reduced-motion: reduce) {
+            *, *::before, *::after {
+                transition-duration: 0ms !important;
+                animation-duration: 0ms !important;
+            }
+        }
+
+        /* Base Resets */
+        * {
+            box-sizing: border-box;
+            margin: 0;
+            padding: 0;
+            scrollbar-width: thin;
+            scrollbar-color: rgba(148,163,184,0.2) transparent;
+        }
+
+        /* Slim dark scrollbars (Webkit) */
+        ::-webkit-scrollbar { width: 6px; height: 6px; }
+        ::-webkit-scrollbar-track { background: transparent; }
+        ::-webkit-scrollbar-thumb { background: rgba(148,163,184,0.2); border-radius: 3px; }
+        ::-webkit-scrollbar-thumb:hover { background: rgba(148,163,184,0.4); }
+
+        body {
+            background-color: var(--bg-base);
+            /* Subtle ambient orbs to make the glass backdrop-filter pop dynamically */
+            background-image: 
+                radial-gradient(circle at 10% 40%, rgba(59, 130, 246, 0.12), transparent 30%),
+                radial-gradient(circle at 90% 60%, rgba(16, 185, 129, 0.12), transparent 30%);
+            background-attachment: fixed;
+            color: var(--text-primary);
+            font-family: var(--font-ui);
+            line-height: 1.5;
+        }
+
+        /* ── Glassmorphism Base Component ── */
+        .glass-panel {
+            background: var(--bg-surface);
+            backdrop-filter: blur(16px) saturate(180%);
+            -webkit-backdrop-filter: blur(16px) saturate(180%);
+            border: 1px solid var(--border);
+        }
+
+        /* ── Grid Layout Strategy ── */
+        #app {
+            display: grid;
+            grid-template-columns: var(--panel-width) 8px 1fr;
+            height: 100vh;
+            overflow: hidden;
+        }
+
+        /* Control Panel (Strictly Interactive Elements) */
+        #control-panel {
+            overflow-y: auto;
+            padding: var(--sp-6);
+            display: flex;
+            flex-direction: column;
+            gap: var(--sp-6);
+            /* Glassmorphism overides */
+            border-top: none;
+            border-bottom: none;
+            border-left: none;
+            border-right: 1px solid var(--border);
+        }
+
+        #resizer {
+            background: transparent;
+            cursor: col-resize;
+            position: relative;
+            z-index: 10;
+            display: flex;
+            justify-content: center;
+            align-items: center;
+        }
+        
+        #resizer::before {
+            content: '';
+            position: absolute;
+            top: 0; left: 0; right: 0; bottom: 0;
+            border-left: 1px solid var(--border);
+            border-right: 1px solid var(--border);
+            background: rgba(255,255,255,0.02);
+            backdrop-filter: blur(8px);
+            transition: background var(--ease-fast);
+        }
+        
+        #resizer:hover::before, #resizer.active::before {
+            background: rgba(59, 130, 246, 0.2); 
+        }
+        
+        #resizer::after {
+            content: '';
+            position: absolute;
+            width: 2px;
+            height: 24px;
+            background: var(--text-secondary);
+            border-radius: 2px;
+            z-index: 2;
+        }
+
+        /* Viz Panel (Displays geometry and information grid) */
+        #viz-panel {
+            overflow-y: auto;
+            display: flex;
+            flex-direction: column;
+            padding: var(--sp-6);
+            gap: var(--sp-6);
+        }
+
+        .viz-row {
+            display: flex;
+            gap: var(--sp-5);
+            width: 100%;
+            max-width: 1600px;
+            margin: 0 auto;
+        }
+
+        #viz-top-row {
+            flex-direction: row;
+            align-items: stretch;
+            min-height: 0;
+        }
+
+        #pseudo-explanation-container {
+            flex: 1 1 300px;
+            max-width: 400px;
+            min-width: 0;
+            display: flex;
+            flex-direction: column;
+        }
+
+        #pseudocode-panel {
+            flex: 1 1 auto;
+            border-bottom-left-radius: 0;
+            border-bottom-right-radius: 0;
+            border-bottom: 1px solid var(--border);
+            overflow-y: auto;
+        }
+
+        #step-explanation {
+            flex: 0 0 auto;
+            border-top-left-radius: 0;
+            border-top-right-radius: 0;
+            border-top: none;
+            min-height: 80px;
+        }
+
+        #canvas-container {
+            flex: 1 1 0;
+            min-width: 0;
+            aspect-ratio: 4 / 3;
+            max-height: 65vh;
+            border-radius: var(--radius-lg);
+            padding: var(--sp-5);
+            display: flex;
+            flex-direction: column;
+        }
+
+        #viz-bottom-row {
+            flex-direction: row;
+            flex-wrap: wrap;
+        }
+
+        .dashboard-card {
+            border-radius: var(--radius-md);
+            padding: var(--sp-4);
+            display: flex;
+            flex-direction: column;
+            overflow: hidden;
+            min-height: 200px;
+        }
+
+        .dashboard-card h3 {
+            margin-bottom: var(--sp-3);
+        }
+
+        #stack-visualizer { flex: 1 1 220px; min-width: 0; }
+        #history { flex: 2 1 220px; min-height: 0; min-width: 0; max-height: 350px; }
+        
+        #algo-overview {
+            margin-top: auto;
+            padding: var(--sp-4);
+            overflow-y: visible;
+            flex-shrink: 0;
+            min-height: max-content;
+        }
+        #algo-overview h3 {
+            display: flex;
+            align-items: center;
+            gap: var(--sp-2);
+            font-size: 1.05rem;
+            color: var(--text-primary);
+            text-transform: none;
+            letter-spacing: 0;
+            margin-bottom: var(--sp-4);
+        }
+        #algo-overview h3 .algo-icon {
+            font-size: 1.1rem;
+        }
+        .overview-heading {
+            font-size: 0.7rem;
+            font-family: var(--font-mono);
+            color: var(--text-secondary);
+            text-transform: uppercase;
+            letter-spacing: 0.1em;
+            margin-bottom: var(--sp-2);
+            margin-top: var(--sp-4);
+            opacity: 0.7;
+        }
+        .overview-heading:first-of-type {
+            margin-top: 0;
+        }
+        #algo-overview .overview-text {
+            font-size: 0.82rem;
+            color: var(--text-secondary);
+            line-height: 1.55;
+        }
+        #algo-overview .overview-text em {
+            color: var(--accent-blue);
+            font-style: italic;
+        }
+        #algo-overview ol {
+            padding-left: var(--sp-5);
+            font-size: 0.8rem;
+            color: var(--text-secondary);
+            line-height: 1.65;
+        }
+        #algo-overview ol li {
+            margin-bottom: 2px;
+        }
+        #algo-overview ol li code {
+            font-family: var(--font-mono);
+            font-size: 0.78rem;
+            color: var(--accent-blue);
+            background: rgba(59,130,246,0.1);
+            padding: 1px 4px;
+            border-radius: 3px;
+        }
+        .complexity-badges {
+            display: flex;
+            flex-wrap: wrap;
+            gap: var(--sp-2);
+            margin-bottom: var(--sp-3);
+        }
+        .complexity-badge {
+            font-size: 0.75rem;
+            font-family: var(--font-mono);
+            padding: 3px 8px;
+            border-radius: 4px;
+            background: rgba(255,255,255,0.04);
+            border: 1px solid var(--border);
+            color: var(--text-secondary);
+        }
+        .complexity-badge span {
+            color: var(--accent-blue);
+            font-weight: 600;
+        }
+        .complexity-badge.best span { color: var(--accent-green); }
+        .complexity-badge.space span { color: var(--text-secondary); }
+        .when-to-use {
+            font-size: 0.8rem;
+            color: var(--text-secondary);
+            line-height: 1.55;
+            background: rgba(59,130,246,0.05);
+            border: 1px solid rgba(59,130,246,0.12);
+            border-radius: var(--radius-sm);
+            padding: var(--sp-2) var(--sp-3);
+        }
+
+        @media (max-width: 1300px) {
+            #viz-top-row {
+                flex-direction: column;
+            }
+            #pseudo-explanation-container {
+                flex: 0 0 auto;
+                max-width: none;
+                flex-direction: row;
+            }
+            #pseudocode-panel {
+                flex: 1 1 50%;
+                border-bottom-left-radius: var(--radius-md);
+                border-bottom-right-radius: 0;
+                border-top-right-radius: 0;
+                border-bottom: none;
+                border-right: 1px solid var(--border);
+            }
+            #step-explanation {
+                flex: 1 1 50%;
+                border-top-left-radius: 0;
+                border-top-right-radius: var(--radius-md);
+                border-bottom-left-radius: 0;
+                border-top: none;
+            }
+            #canvas-container {
+                max-height: 55vh;
+            }
+            .viz-row {
+                flex-direction: column;
+            }
+        }
+
+        @media (max-width: 980px) {
+            #app {
+                grid-template-columns: 1fr;
+                height: auto;
+                overflow: visible;
+            }
+            #resizer {
+                display: none;
+            }
+            #viz-panel {
+                order: -1;
+                padding: var(--sp-4);
+            }
+            #control-panel {
+                border-right: none;
+                border-top: 1px solid var(--border);
+                width: auto !important;
+            }
+            .viz-row {
+                flex-direction: column !important;
+            }
+            #pseudo-explanation-container {
+                flex-direction: column !important;
+            }
+            #pseudocode-panel {
+                border-radius: var(--radius-md) var(--radius-md) 0 0 !important;
+                border-right: none !important;
+                border-bottom: 1px solid var(--border) !important;
+            }
+            #step-explanation {
+                border-radius: 0 0 var(--radius-md) var(--radius-md) !important;
+            }
+            #canvas-container {
+                aspect-ratio: auto;
+                max-height: none;
+                min-height: 300px;
+            }
+        }
+
+        /* ── General UI Components ── */
+        header h1 {
+            font-size: 1.5rem;
+            margin-bottom: var(--sp-1);
+        }
+        header span {
+            color: var(--text-secondary);
+            font-size: 0.9rem;
+        }
+
+        h3 {
+            font-size: 1rem;
+            color: var(--text-secondary);
+            margin-bottom: var(--sp-3);
+            text-transform: uppercase;
+            letter-spacing: 0.05em;
+        }
+
+        button {
+            background: var(--bg-elevated);
+            color: var(--text-primary);
+            border: 1px solid var(--border);
+            padding: var(--sp-2) var(--sp-4);
+            border-radius: var(--radius-sm);
+            cursor: pointer;
+            font-family: inherit;
+            font-size: 0.9rem;
+            transition: all var(--ease-default);
+            backdrop-filter: blur(4px);
+        }
+        button:hover {
+            background: var(--accent-blue);
+            border-color: var(--accent-blue);
+        }
+
+        /* Algo Select */
+        #algo-select {
+            display: flex;
+            gap: var(--sp-2);
+        }
+        #algo-select button {
+            flex: 1;
+        }
+        #algo-select button.active-algo {
+            background: var(--accent-blue);
+            border-color: var(--accent-blue);
+        }
+
+        /* Data Input & Progressive Disclosure */
+        #preset-btns {
+            display: grid;
+            grid-template-columns: 1fr 1fr;
+            gap: var(--sp-2);
+            margin-bottom: var(--sp-3);
+        }
+        #preset-btns button {
+            padding: var(--sp-1) var(--sp-2);
+            font-size: 0.8rem;
+        }
+        #preset-btns button.active {
+            background: var(--accent-blue);
+            border-color: var(--accent-blue);
+        }
+
+        #custom-input-wrapper {
+            max-height: 0;
+            opacity: 0;
+            overflow: hidden;
+            transition: max-height var(--ease-slow), opacity var(--ease-slow), margin var(--ease-slow);
+        }
+        #custom-input-wrapper.open {
+            max-height: 120px;
+            opacity: 1;
+            margin-bottom: var(--sp-2);
+        }
+        
+        #coords-input {
+            width: 100%;
+            height: 90px;
+            background: var(--bg-elevated);
+            border: 1px solid var(--border);
+            color: var(--text-primary);
+            padding: var(--sp-2);
+            border-radius: var(--radius-sm);
+            font-family: var(--font-mono);
+            font-size: 0.85rem;
+            resize: none;
+        }
+        #coords-input:focus {
+            outline: none;
+            border-color: var(--accent-blue);
+        }
+        
+        #btn-load-points {
+            width: 100%;
+            background: rgba(59,130,246,0.15);
+            border-color: rgba(59,130,246,0.4);
+            color: var(--accent-blue);
+            font-weight: 600;
+            letter-spacing: 0.02em;
+        }
+        #btn-load-points:hover {
+            background: var(--accent-blue);
+            border-color: var(--accent-blue);
+            color: #fff;
+        }
+
+        /* Playback button colors */
+        #btn-build {
+            background: rgba(59, 130, 246, 0.15);
+            border-color: rgba(59, 130, 246, 0.4);
+            color: var(--accent-blue);
+        }
+        #btn-build:hover { background: var(--accent-blue); color: #fff; }
+        #btn-play {
+            background: rgba(16, 185, 129, 0.15);
+            border-color: rgba(16, 185, 129, 0.4);
+            color: var(--accent-green);
+        }
+        #btn-play:hover { background: var(--accent-green); color: #fff; }
+        #btn-pause {
+            background: rgba(234, 179, 8, 0.15);
+            border-color: rgba(234, 179, 8, 0.4);
+            color: #eab308;
+        }
+        #btn-pause:hover { background: #eab308; color: #111; }
+        #btn-reset {
+            background: rgba(225, 29, 72, 0.15);
+            border-color: rgba(225, 29, 72, 0.4);
+            color: var(--accent-rose);
+        }
+        #btn-reset:hover { background: var(--accent-rose); color: #fff; }
+
+        /* Tip Callout */
+        .tip-callout {
+            display: flex;
+            gap: var(--sp-2);
+            align-items: flex-start;
+            background: rgba(16,185,129,0.07);
+            border: 1px solid rgba(16,185,129,0.2);
+            border-radius: var(--radius-sm);
+            padding: var(--sp-2) var(--sp-3);
+            font-size: 0.78rem;
+            color: var(--text-secondary);
+            line-height: 1.45;
+            margin-top: var(--sp-3);
+        }
+        .tip-callout .tip-icon {
+            color: var(--accent-green);
+            font-size: 0.85rem;
+            flex-shrink: 0;
+            margin-top: 1px;
+        }
+
+        .paradigm-badge {
+            background: rgba(16, 185, 129, 0.15);
+            color: var(--accent-green);
+            padding: 2px 8px;
+            border: 1px solid rgba(16, 185, 129, 0.3);
+            border-radius: var(--radius-sm);
+            font-size: 0.70rem;
+            font-family: var(--font-mono);
+            text-transform: uppercase;
+        }
+
+        /* (complexity-label rules moved into #algo-overview) */
+
+        /* Preset button em hints */
+        #preset-btns em {
+            opacity: 0.55;
+            font-style: normal;
+            font-size: 0.75em;
+        }
+
+        /* Playback */
+        #playback-btns {
+            display: flex;
+            gap: var(--sp-2);
+            flex-wrap: wrap;
+            margin-bottom: var(--sp-4);
+        }
+        #playback-btns button {
+            flex: 1;
+            min-width: calc(33% - var(--sp-2));
+        }
+
+        #speed-control {
+            display: flex;
+            align-items: center;
+            gap: var(--sp-3);
+            margin-bottom: var(--sp-4);
+        }
+        #speed-control label {
+            font-size: 0.9rem;
+            color: var(--text-secondary);
+        }
+        #speed-slider {
+            flex: 1;
+            accent-color: var(--accent-blue);
+        }
+        #speed-value {
+            font-family: var(--font-mono);
+            font-size: 0.9rem;
+            min-width: 45px;
+            text-align: right;
+        }
+
+        #state-indicators {
+            display: flex;
+            justify-content: space-between;
+            font-family: var(--font-mono);
+            font-size: 0.85rem;
+            color: var(--text-secondary);
+            background: rgba(0,0,0,0.2);
+            padding: var(--sp-2) var(--sp-3);
+            border-radius: var(--radius-sm);
+            border: 1px solid var(--border);
+        }
+
+        /* ── Details Sections Specifics ── */
+        #pseudocode {
+            font-family: var(--font-mono);
+            font-size: 0.85rem;
+            white-space: pre-wrap;
+            color: var(--text-primary);
+        }
+        .line {
+            display: block;
+            padding: 2px 4px;
+            border-left: 3px solid transparent;
+            cursor: pointer;
+            transition: background 150ms ease;
+        }
+        .line:hover {
+            background: rgba(255,255,255,0.05);
+        }
+        .line-active {
+            background: rgba(234, 179, 8, 0.15) !important;
+            border-left-color: #eab308;
+        }
+        /* VSCode Theme Colors for syntax */
+        .syn-kw { color: #c678dd; } /* Keywords */
+        .syn-func { color: #61afef; } /* Functions */
+        .syn-var { color: #e06c75; } /* Variables/Properties */
+        .syn-num { color: #d19a66; } /* Numbers */
+        .syn-comment { color: #5c6370; font-style: italic; } /* Comments */
+        .syn-op { color: #abb2bf; } /* Operators */
+        .syn-str { color: #98c379; } /* Strings/Misc */
+
+        #stack-container {
+            flex: 1;
+            display: flex;
+            flex-direction: column-reverse; /* Push items bottom up visually */
+            gap: 4px;
+            overflow-y: auto;
+            background: var(--bg-elevated);
+            border-radius: var(--radius-sm);
+            padding: var(--sp-2);
+            border: 1px solid var(--border);
+        }
+        .stack-item {
+            background: var(--bg-surface);
+            padding: var(--sp-1);
+            text-align: center;
+            border: 1px solid var(--border);
+            border-radius: var(--radius-sm);
+            font-family: var(--font-mono);
+            font-size: 0.8rem;
+            color: var(--text-primary);
+        }
+
+        #history-scroll {
+            flex: 1;
+            overflow-y: auto;
+            min-height: 0; /* critical for flex overflow */
+            border: 1px solid var(--border);
+            border-radius: var(--radius-md);
+            background: var(--bg-elevated);
+        }
+        #history-table {
+            width: 100%;
+            border-collapse: collapse;
+            font-size: 0.85rem;
+            text-align: left;
+        }
+        #history-table th {
+            position: sticky;
+            top: 0;
+            background: var(--bg-surface);
+            padding: var(--sp-2) var(--sp-3);
+            color: var(--text-secondary);
+            border-bottom: 1px solid var(--border);
+            font-weight: normal;
+            backdrop-filter: blur(8px);
+        }
+        #history-table td {
+            padding: var(--sp-2) var(--sp-3);
+            border-bottom: 1px solid rgba(255,255,255,0.04);
+            cursor: pointer;
+        }
+        #history-table tr:hover td {
+            background: rgba(255,255,255,0.05);
+        }
+
+        #counters {
+            display: flex;
+            justify-content: space-between;
+            margin-top: auto;
+            font-family: var(--font-mono);
+            font-size: 0.85rem;
+            color: var(--text-secondary);
+            border-top: 1px solid var(--border);
+            padding-top: var(--sp-2);
+        }
+
+        /* ── SVG Visualization ── */
+        .viz-legend {
+            display: flex;
+            justify-content: center;
+            gap: var(--sp-4);
+            margin-bottom: var(--sp-3);
+            font-size: 0.8rem;
+            color: var(--text-secondary);
+        }
+        .legend-item {
+            display: flex;
+            align-items: center;
+            gap: 6px;
+        }
+        .legend-color {
+            width: 10px;
+            height: 10px;
+            border-radius: 50%;
+            display: inline-block;
+        }
+        .legend-color.comparing { background: var(--accent-blue); }
+        .legend-color.hull { background: var(--accent-green); }
+        .legend-color.rejected { background: var(--state-stack-pop); }
+        .legend-color.default { background: var(--text-secondary); opacity: 0.5; }
+        
+        #viz {
+            width: 100%;
+            height: 100%;
+            display: block;
+        }
+        
+        .grid-line {
+            stroke: rgba(255,255,255,0.05);
+            stroke-width: 1;
+            stroke-dasharray: 4 4;
+        }
+
+        .point-default { fill: var(--text-secondary); transition: all var(--ease-default); }
+        .point-active { fill: var(--accent-blue); }
+        .point-comparing { fill: var(--state-comparing); }
+        .point-hull { fill: var(--accent-green); }
+
+        .edge-default { stroke: var(--text-secondary); opacity: 0.3; transition: all var(--ease-default); }
+        .edge-comparing { stroke: var(--accent-blue); opacity: 0.8; }
+        .edge-hull { stroke: var(--accent-green); opacity: 1; stroke-width: 2.5; }
+        .edge-rejected { stroke: var(--accent-rose); opacity: 0.5; stroke-dasharray: 4 2; }
+
+        @keyframes chart-pulse {
+            0%   { r: 3.5; opacity: 0.6; }
+            50%  { r: 7;   opacity: 0.2; }
+            100% { r: 3.5; opacity: 0.6; }
+        }
+        .pulse-ring {
+            animation: chart-pulse 2s ease-in-out infinite;
+        }
+
+        .term {
+            border-bottom: 1px dashed var(--accent-blue);
+            cursor: help;
+            position: relative;
+            display: inline-block;
+            color: inherit;
+        }
+        .term .term-tip {
+            display: none;
+        }
+        #floating-tooltip {
+            position: fixed;
+            background: rgba(15, 23, 42, 0.97);
+            border: 1px solid var(--accent-blue);
+            color: var(--text-primary);
+            font-size: 0.78rem;
+            line-height: 1.5;
+            border-radius: 6px;
+            padding: 8px 12px;
+            max-width: min(260px, 90vw);
+            z-index: 99999;
+            pointer-events: none;
+            opacity: 0;
+            transition: opacity 120ms ease;
+            font-family: var(--font-ui);
+            font-style: normal;
+            font-weight: normal;
+            white-space: normal;
+            box-shadow: 0 4px 16px rgba(0,0,0,0.4);
+        }
+        #floating-tooltip.visible {
+            opacity: 1;
+        }
+    </style>
+</head>
+<body>
+    <div id="app">
+        <!-- 1. LEFT COLUMN: Strictly User Controls -->
+        <aside id="control-panel" class="glass-panel">
+            <header id="panel-header">
+                <h1>Convex Hull Visualizer</h1>
+                <span>Algorithm Learning Tool</span>
+            </header>
+
+            <section id="algo-select-section">
+                <h3>Select Algorithm</h3>
+                <div id="algo-select">
+                    <button id="btn-graham" class="active-algo">Graham Scan</button>
+                    <button id="btn-jarvis">Jarvis March</button>
+                </div>
+            </section>
+
+            <section id="data-input">
+                <h3>Data Points</h3>
+                <div id="preset-btns">
+                    <button id="btn-preset-random" class="preset-btn active">Random <em>(~15)</em></button>
+                    <button id="btn-preset-circle" class="preset-btn">Circle <em><span id="worst-case-tag" style="display:none">(Worst Case ★)</span><span id="circle-count-tag">(~12)</span></em></button>
+                    <button id="btn-preset-grid" class="preset-btn">Grid <em>(~16)</em></button>
+                    <button id="btn-preset-custom" class="preset-btn">Custom</button>
+                </div>
+                <div id="worst-case-callout" class="tip-callout" style="display: none; margin-top: 8px;">
+                    <span class="tip-icon" style="color:var(--accent-rose)">⚠️</span>
+                    <span>Worst case for Jarvis March: when every point lies on the hull (as in a circle), h = n, so the algorithm does n comparisons for each of n hull vertices — n × n = n² total. With 12 points that is 144 comparisons. Graham Scan always takes only n log₂ n — for 12 points that is roughly 43. This is why algorithm choice matters when datasets are large.</span>
+                </div>
+                <!-- Progressive disclosure element -->
+                <div id="custom-input-wrapper">
+                    <textarea id="coords-input" placeholder="Enter custom coordinates&#10;e.g.&#10;10, 20&#10;30, 40"></textarea>
+                </div>
+                <button id="btn-load-points">⬆ Load Points</button>
+            </section>
+
+            <section id="playback">
+                <h3>Controls</h3>
+                <div id="playback-btns">
+                    <button id="btn-build">Build Steps</button>
+                    <button id="btn-step">Step</button>
+                    <button id="btn-play">Play</button>
+                    <button id="btn-pause">Pause</button>
+                    <button id="btn-reset">Reset</button>
+                </div>
+                <div id="speed-control">
+                    <label for="speed-slider">Speed</label>
+                    <input type="range" id="speed-slider" min="0.25" max="4" step="0.25" value="1">
+                    <span id="speed-value">1.00&times;</span>
+                </div>
+                <div id="state-indicators">
+                    <span id="step-counter">Step 0 / 0</span>
+                    <span id="status-label">Idle</span>
+                </div>
+                <div class="tip-callout">
+                    <span class="tip-icon">💡</span>
+                    <span>Click <strong>Build Steps</strong> after selecting an algorithm or loading new points. Use <strong>Step</strong> to walk through line-by-line.</span>
+                </div>
+            </section>
+
+            <section id="algo-overview" class="glass-panel dashboard-card">
+                <div style="display:flex; justify-content:space-between; align-items:flex-start;">
+                    <h3 id="overview-toggle" style="margin-bottom:0; cursor:pointer; user-select:none; display:flex; align-items:center; gap:8px;">
+                        <div><span class="algo-icon">📐</span> <span id="overview-title">Graham Scan — Overview</span></div>
+                        <span id="overview-chevron" style="transition: transform 0.3s ease; font-size: 0.8em; transform: rotate(0deg);">▼</span>
+                    </h3>
+                    <span id="overview-paradigm" class="paradigm-badge"></span>
+                </div>
+
+                <div id="overview-body" style="transition: max-height 0.4s ease, opacity 0.4s ease; overflow: hidden; max-height: 5000px; opacity: 1;">
+                    <div id="overview-extra-top"></div>
+
+                    <p class="overview-heading">Core Idea</p>
+                    <p id="overview-core" class="overview-text"></p>
+
+                    <p class="overview-heading">How It Works (Step by Step)</p>
+                    <ol id="overview-steps"></ol>
+
+                    <p class="overview-heading">Complexity</p>
+                    <div id="overview-badges" class="complexity-badges"></div>
+                    <div id="chart-container" style="border:1px solid var(--border); border-radius:var(--radius-sm); background:var(--bg-elevated); display:flex; align-items:center; justify-content:center; color:var(--text-secondary); font-size:0.8rem; overflow:hidden; margin-bottom:var(--sp-3); min-height:140px;">
+                        [ Chart Placeholder ]
+                    </div>
+                    <div id="counters">
+                        <span>Comparisons: <b id="count-compare">0</b></span>
+                        <span>Cross Products: <b id="count-cross">0</b></span>
+                    </div>
+
+                    <p class="overview-heading">When to Use</p>
+                    <p id="overview-when" class="when-to-use"></p>
+
+                    <div id="overview-concepts-container" style="margin-top:var(--sp-4);"></div>
+                </div>
+            </section>
+        </aside>
+
+        <!-- Dynamic Resizer -->
+        <div id="resizer"></div>
+
+        <!-- 2. RIGHT COLUMN: Information & Visualization -->
+        <main id="viz-panel">
+            <div id="viz-top-row" class="viz-row">
+                <!-- Left side: Pseudocode & Explanation -->
+                <div id="pseudo-explanation-container">
+                    <section id="pseudocode-panel" class="glass-panel dashboard-card">
+                        <h3>Pseudocode</h3>
+                        <pre id="pseudocode"><code><span class="line" data-line="1">// Select algorithm</span></code></pre>
+                    </section>
+                    
+                    <section id="step-explanation" class="glass-panel dashboard-card">
+                        <h3>Explanation</h3>
+                        <p id="explanation-text">👋 Welcome. Select an algorithm above, then click <strong>Build Steps</strong> to generate the animation. Use <strong>Step</strong> to walk through one line at a time, or <strong>Play</strong> to watch it run. Hover any underlined word for a plain-English definition.</p>
+                    </section>
+                </div>
+
+                <!-- Right side: The Geometry Canvas -->
+                <div id="canvas-container" class="glass-panel">
+                    <div class="viz-legend">
+                        <div class="legend-item"><span class="legend-color default"></span> Default</div>
+                        <div class="legend-item"><span class="legend-color comparing"></span> Comparing</div>
+                        <div class="legend-item"><span class="legend-color rejected"></span> Rejected</div>
+                        <div class="legend-item"><span class="legend-color hull"></span> Hull</div>
+                    </div>
+                    <svg id="viz" viewBox="0 0 800 600" preserveAspectRatio="xMidYMid meet">
+                        <defs>
+                            <marker id="arrowhead" markerWidth="10" markerHeight="7" refX="9" refY="3.5" orient="auto">
+                                <polygon points="0 0, 10 3.5, 0 7" fill="var(--text-secondary)" />
+                            </marker>
+                        </defs>
+                        <g id="grid-layer"></g>
+                        <g id="edge-layer"></g>
+                        <g id="point-layer"></g>
+                        <g id="label-layer"></g>
+                    </svg>
+                </div>
+            </div>
+
+            <div id="viz-bottom-row" class="viz-row">
+                <section id="history" class="glass-panel dashboard-card">
+                    <h3>Step History</h3>
+                    <div id="history-scroll">
+                        <table id="history-table">
+                            <thead>
+                                <tr>
+                                    <th>Step</th>
+                                    <th>Action</th>
+                                    <th>Detail</th>
+                                </tr>
+                            </thead>
+                            <tbody id="history-body">
+                                <!-- Table rows mapped here -->
+                            </tbody>
+                        </table>
+                    </div>
+                </section>
+                
+                <section id="stack-visualizer" class="glass-panel dashboard-card">
+                    <h3>Stack State</h3>
+                    <div id="stack-container">
+                        <!-- Example Placeholder. Will fill dynamically -->
+                    </div>
+                </section>
+            </div>
+        </main>
+    </div>
+    
+    <script>
+        /**
+         * ==========================================
+         *  UI & LAYOUT CONTROLLERS (Phase 1)
+         * ==========================================
+         * This IIFE isolates strictly front-end UX logic.
+         */
+        (() => {
+            console.log("Convex Hull Visualizer UI Engine Loaded.");
+
+            // 1. Resizer Logic
+            const resizer = document.getElementById('resizer');
+            let isResizing = false;
+
+            resizer.addEventListener('mousedown', (e) => {
+                isResizing = true;
+                resizer.classList.add('active');
+                document.body.style.cursor = 'col-resize';
+                document.body.style.userSelect = 'none';
+            });
+
+            window.addEventListener('mousemove', (e) => {
+                if (!isResizing) return;
+                
+                let newWidth = e.clientX;
+                const minWidth = 300;
+                const maxWidth = window.innerWidth - 400; // Leave space for right column
+                
+                if (newWidth < minWidth) newWidth = minWidth;
+                if (newWidth > maxWidth) newWidth = maxWidth;
+                
+                document.documentElement.style.setProperty('--panel-width', `${newWidth}px`);
+            });
+
+            window.addEventListener('mouseup', () => {
+                if (isResizing) {
+                    isResizing = false;
+                    resizer.classList.remove('active');
+                    document.body.style.cursor = 'default';
+                    document.body.style.userSelect = 'auto';
+                }
+            });
+
+            // 2. Progressive Disclosure (Presets & Custom Input)
+            const presetBtns = document.querySelectorAll('.preset-btn');
+            const customWrapper = document.getElementById('custom-input-wrapper');
+            const worstCaseCallout = document.getElementById('worst-case-callout');
+            
+            presetBtns.forEach(btn => {
+                btn.addEventListener('click', (e) => {
+                    const targetBtn = e.currentTarget;
+                    presetBtns.forEach(b => b.classList.remove('active'));
+                    targetBtn.classList.add('active');
+                    
+                    if (targetBtn.id === 'btn-preset-custom') {
+                        customWrapper.classList.add('open');
+                        document.getElementById('coords-input').focus();
+                    } else {
+                        customWrapper.classList.remove('open');
+                    }
+
+                    if (targetBtn.id === 'btn-preset-circle') {
+                        worstCaseCallout.style.display = 'flex';
+                    } else {
+                        worstCaseCallout.style.display = 'none';
+                    }
+                });
+            });
+            
+            // 3. Algorithm Switcher visual sync
+            const algoBtns = document.querySelectorAll('#algo-select button');
+            algoBtns.forEach(btn => {
+                btn.addEventListener('click', (e) => {
+                    algoBtns.forEach(b => b.classList.remove('active-algo'));
+                    e.target.classList.add('active-algo');
+                });
+            });
+
+            // 4. Collapsible Overview Toggle
+            document.getElementById('overview-toggle').addEventListener('click', () => {
+                const body = document.getElementById('overview-body');
+                const chevron = document.getElementById('overview-chevron');
+                const isCollapsed = body.style.maxHeight === '0px';
+                if (isCollapsed) {
+                    body.style.maxHeight = '5000px';
+                    body.style.opacity = '1';
+                    chevron.style.transform = 'rotate(0deg)';
+                } else {
+                    body.style.maxHeight = '0px';
+                    body.style.opacity = '0';
+                    chevron.style.transform = 'rotate(180deg)';
+                }
+            });
+
+        })();
+
+        /**
+         * ==========================================
+         *  ALGORITHMS ENGINE (Phase 2 & Future Phases)
+         * ==========================================
+         */
+        (() => {
+            // --- 1. State Management ---
+            const STATE = {
+                activePreset: 'random',
+                rawPoints: [],     // Mathematical space
+                svgPoints: [],     // SVG space
+                viewBox: { x: 0, y: 0, width: 800, height: 600 },
+                pointCount: 0
+            };
+
+            function setState(patch) {
+                Object.assign(STATE, patch);
+            }
+
+            // Sync preset state from UI
+            const presetBtns = document.querySelectorAll('.preset-btn');
+            presetBtns.forEach(btn => {
+                btn.addEventListener('click', (e) => {
+                    STATE.activePreset = e.target.id.replace('btn-preset-', '');
+                });
+            });
+
+            // Utils
+            const round2 = (v) => Math.round(v * 100) / 100;
+            const deDuplicate = (points) => {
+                const unique = [];
+                const seen = new Set();
+                for (const p of points) {
+                    const key = `${p.x},${p.y}`;
+                    if (!seen.has(key)) {
+                        seen.add(key);
+                        unique.push(p);
+                    }
+                }
+                return unique;
+            };
+
+            // --- 2. Dataset Generators ---
+            const DEFAULT_RANDOM_COUNT = 15;
+            const DEFAULT_CIRCLE_COUNT = 12;
+
+            function generateRandom(count = DEFAULT_RANDOM_COUNT) {
+                const points = [];
+                const MIN = 10, MAX = 400;
+                const range = MAX - MIN;
+                for (let i = 0; i < count; i++) {
+                    const x = MIN + Math.random() * range;
+                    const y = MIN + Math.random() * range;
+                    points.push({ x: round2(x), y: round2(y) });
+                }
+                return deDuplicate(points);
+            }
+
+            function generateCircle(count = DEFAULT_CIRCLE_COUNT) {
+                const points = [];
+                const cx = 200, cy = 200, r = 150;
+                const angleStep = (2 * Math.PI) / count;
+                for (let i = 0; i < count; i++) {
+                    const theta = i * angleStep;
+                    const x = cx + r * Math.cos(theta);
+                    const y = cy + r * Math.sin(theta);
+                    points.push({ x: round2(x), y: round2(y) });
+                }
+                return deDuplicate(points);
+            }
+
+            function generateGrid(cols = 5, rows = 4) {
+                const points = [];
+                const spacing = 60, ox = 50, oy = 50;
+                for (let r = 0; r < rows; r++) {
+                    for (let c = 0; c < cols; c++) {
+                        points.push({ x: ox + c * spacing, y: oy + r * spacing });
+                    }
+                }
+                return deDuplicate(points);
+            }
+
+            function parseCustom(rawString) {
+                const normalized = rawString.replace(/;/g, '\n');
+                const lines = normalized.split('\n').map(l => l.trim()).filter(l => l.length > 0);
+                const points = [];
+                const errors = [];
+
+                for (let i = 0; i < lines.length; i++) {
+                    const parts = lines[i].split(/[,\s]+/).filter(Boolean);
+                    if (parts.length < 2) {
+                        errors.push(`Line ${i+1}: Need (x, y)`);
+                        continue;
+                    }
+                    const x = parseFloat(parts[0]);
+                    const y = parseFloat(parts[1]);
+                    if (isNaN(x) || isNaN(y)) {
+                        errors.push(`Line ${i+1}: Non-numeric`);
+                        continue;
+                    }
+                    points.push({ x: round2(x), y: round2(y) });
+                }
+                return { points: deDuplicate(points), errors };
+            }
+
+            // --- 3. SVG Coordinate Mapper ---
+            function mapToSVG(rawPoints) {
+                if (rawPoints.length === 0) return { svgPoints: [], viewBox: { x:0, y:0, width:800, height:600 } };
+
+                let xMin = Infinity, xMax = -Infinity;
+                let yMin = Infinity, yMax = -Infinity;
+
+                for (const p of rawPoints) {
+                    if (p.x < xMin) xMin = p.x;
+                    if (p.x > xMax) xMax = p.x;
+                    if (p.y < yMin) yMin = p.y;
+                    if (p.y > yMax) yMax = p.y;
+                }
+
+                let xRange = xMax - xMin;
+                let yRange = yMax - yMin;
+
+                if (xRange === 0) xRange = 100;
+                if (yRange === 0) yRange = 100;
+
+                const xPad = xRange * 0.10;
+                const yPad = yRange * 0.10;
+
+                const vbX = xMin - xPad;
+                const vbY = yMin - yPad;
+                const vbW = xRange + 2 * xPad;
+                const vbH = yRange + 2 * yPad;
+
+                const svgPoints = rawPoints.map((p, index) => ({
+                    x: p.x,
+                    y: (vbY + vbH) - (p.y - vbY), // Y-Axis flip
+                    id: index
+                }));
+
+                return { 
+                    svgPoints, 
+                    viewBox: { x: vbX, y: vbY, width: vbW, height: vbH } 
+                };
+            }
+
+            // --- 4. Rendering ---
+            const SVG_NS = 'http://www.w3.org/2000/svg';
+
+            function niceStep(range) {
+                const rough = range / 10;
+                const mag = Math.pow(10, Math.floor(Math.log10(rough)));
+                const res = rough / mag;
+                if (res <= 1.5) return 1 * mag;
+                if (res <= 3.5) return 2 * mag;
+                if (res <= 7.5) return 5 * mag;
+                return 10 * mag;
+            }
+
+            function renderGridLines(viewBox) {
+                const gridLayer = document.getElementById('grid-layer');
+                while (gridLayer.firstChild) gridLayer.removeChild(gridLayer.firstChild);
+
+                const xStep = niceStep(viewBox.width);
+                const yStep = niceStep(viewBox.height);
+
+                const xStart = Math.ceil(viewBox.x / xStep) * xStep;
+                for (let x = xStart; x <= viewBox.x + viewBox.width; x += xStep) {
+                    const line = document.createElementNS(SVG_NS, 'line');
+                    line.setAttribute('x1', x);
+                    line.setAttribute('y1', viewBox.y);
+                    line.setAttribute('x2', x);
+                    line.setAttribute('y2', viewBox.y + viewBox.height);
+                    line.classList.add('grid-line');
+                    gridLayer.appendChild(line);
+                }
+
+                const yStart = Math.ceil(viewBox.y / yStep) * yStep;
+                for (let y = yStart; y <= viewBox.y + viewBox.height; y += yStep) {
+                    const line = document.createElementNS(SVG_NS, 'line');
+                    line.setAttribute('x1', viewBox.x);
+                    line.setAttribute('y1', y);
+                    line.setAttribute('x2', viewBox.x + viewBox.width);
+                    line.setAttribute('y2', y);
+                    line.classList.add('grid-line');
+                    gridLayer.appendChild(line);
+                }
+            }
+
+            function renderPoints(svgPoints, viewBox) {
+                const svgEl = document.getElementById('viz');
+                svgEl.setAttribute('viewBox', `${viewBox.x} ${viewBox.y} ${viewBox.width} ${viewBox.height}`);
+
+                const maxDim = Math.max(viewBox.width, viewBox.height);
+                let pointRadius = maxDim * 0.012;
+                pointRadius = Math.max(3, Math.min(pointRadius, 10));
+
+                const pointLayer = document.getElementById('point-layer');
+                while (pointLayer.firstChild) pointLayer.removeChild(pointLayer.firstChild);
+
+                const labelLayer = document.getElementById('label-layer');
+                while (labelLayer.firstChild) labelLayer.removeChild(labelLayer.firstChild);
+
+                for (const p of svgPoints) {
+                    const circle = document.createElementNS(SVG_NS, 'circle');
+                    circle.setAttribute('cx', p.x);
+                    circle.setAttribute('cy', p.y);
+                    circle.setAttribute('r', pointRadius);
+                    circle.setAttribute('data-index', p.id);
+                    circle.classList.add('point-default');
+                    pointLayer.appendChild(circle);
+
+                    const label = document.createElementNS(SVG_NS, 'text');
+                    label.setAttribute('x', p.x);
+                    label.setAttribute('y', p.y - pointRadius - 4);
+                    label.setAttribute('text-anchor', 'middle');
+                    label.setAttribute('font-size', Math.max(10, maxDim * 0.018));
+                    label.setAttribute('fill', 'var(--text-secondary)');
+                    label.setAttribute('data-index', p.id);
+                    label.textContent = `P${p.id}`;
+                    labelLayer.appendChild(label);
+                }
+            }
+
+            // --- 5. Orchestration ---
+            function loadPoints() {
+                let raw = [];
+                switch (STATE.activePreset) {
+                    case 'random': raw = generateRandom(); break;
+                    case 'circle': raw = generateCircle(); break;
+                    case 'grid': raw = generateGrid(); break;
+                    case 'custom':
+                        const val = document.getElementById('coords-input').value;
+                        const { points, errors } = parseCustom(val);
+                        if (errors.length > 0) {
+                            console.warn("Parse errors:", errors);
+                            if (points.length < 3) alert("Errors parsing custom coordinates:\n" + errors.join('\n'));
+                        }
+                        if (points.length < 3) {
+                            alert("Need at least 3 valid points for Convex Hull.");
+                            return;
+                        }
+                        raw = points;
+                        break;
+                }
+
+                if (raw.length < 3) {
+                    alert("Not enough unique points after de-duplication (Need at least 3).");
+                    return;
+                }
+
+                const { svgPoints, viewBox } = mapToSVG(raw);
+
+                setState({ rawPoints: raw, svgPoints, viewBox, pointCount: raw.length });
+
+                renderGridLines(viewBox);
+                renderPoints(svgPoints, viewBox);
+
+                document.getElementById('status-label').textContent = 'Ready';
+                document.getElementById('step-counter').textContent = `Step 0 / 0`;
+                document.getElementById('explanation-text').textContent = `${raw.length} points loaded. Click Build Steps to begin — or switch algorithms first if you want to compare both on the same points.`;
+                
+                // Clear any drawn edges from previous runs
+                const edgeLayer = document.getElementById('edge-layer');
+                while(edgeLayer.firstChild) edgeLayer.removeChild(edgeLayer.firstChild);
+            }
+
+            // Hook up "Load Points" button
+            document.getElementById('btn-load-points').addEventListener('click', loadPoints);
+
+            // Expose for Phase 4 Playback Engine
+            window.APP_STATE = STATE;
+            window.renderPoints = renderPoints;
+            window.SVG_NS = SVG_NS;
+
+            // Auto-load initial points
+            loadPoints();
+
+        })();
+
+        /**
+         * ==========================================
+         *  ALGORITHMS ENGINE (Phase 3)
+         * ==========================================
+         * Pure functions that operate on mathematical space (rawPoints).
+         * They do NOT touch the DOM. They return an array of Snapshot objects.
+         */
+        const ALGORITHMS = (() => {
+
+            // ── 0. Glossary Tooltip System ──
+            const GLOSSARY = {
+                'convex hull':    'The smallest shape that wraps around all your points — like stretching a rubber band around pins and letting go.',
+                'polar angle':    'The direction from the anchor point to another point, measured in degrees going counterclockwise from the 3 o\'clock position.',
+                'anchor':         'The bottom-most point in the set. It is always on the hull boundary, so it is a safe and guaranteed starting point.',
+                'stack':          'A list where you can only add or remove from the top — like a stack of plates. Graham Scan uses it to remember current hull candidates.',
+                'cross product':  'A calculation on three points that tells you which way they curve: positive = bending outward (left turn, good), negative = bending inward (right turn, remove the middle point).',
+                'collinear':      'Three points are collinear when they lie on a perfectly straight line. The cross product equals zero for collinear points.',
+                'greedy':         'An algorithm strategy that always makes the best-looking choice right now, without reconsidering past decisions. Works here because the most outward point is always provably correct.',
+                'O(n log n)':     'If you double the number of points, the work grows by just a little more than double. For 1000 points: roughly 10,000 operations. Fast and predictable.',
+                'O(n²)':          'If you double the number of points, the work quadruples. For 1000 points: 1,000,000 operations. Gets slow quickly.',
+                'O(nh)':          'n is total points, h is hull points found. Fast when h is small (few points on the boundary). Slow when h ≈ n (almost every point is on the hull).',
+                'hull vertex':    'A point that lies on the outer boundary of the convex hull. Interior points are never hull vertices.',
+                'counterclockwise': 'Turning in the same direction as the hands of a clock go backward — to the left when moving upward.',
+                'gift wrapping':  'The everyday analogy for Jarvis March: imagine pulling a piece of string tightly around the outside of all the points, one corner at a time.'
+            };
+
+            function T(displayText, key) {
+                const tip = GLOSSARY[key || displayText.toLowerCase()];
+                if (!tip) return displayText;
+                return `<span class="term">${displayText}<span class="term-tip">${tip}</span></span>`;
+            }
+
+            // Expose T globally for ALGO_OVERVIEWS in the Animation Engine IIFE
+            window._T = T;
+            
+            // ── 1. Math Utilities ──
+            // Returns > 0 if left turn (CCW), < 0 if right turn (CW), 0 if collinear
+            const cross = (o, a, b) => (a.x - o.x) * (b.y - o.y) - (a.y - o.y) * (b.x - o.x);
+            
+            // Returns angle in radians from an anchor point
+            const polarAngle = (anchor, p) => Math.atan2(p.y - anchor.y, p.x - anchor.x);
+            
+            // Distance squared (avoids sqrt)
+            const distSq = (a, b) => (b.x - a.x) ** 2 + (b.y - a.y) ** 2;
+
+            function buildEdgePairs(hullIndices, closed = false) {
+                const edges = [];
+                for (let i = 0; i < hullIndices.length - 1; i++) {
+                    edges.push([hullIndices[i], hullIndices[i + 1]]);
+                }
+                if (closed && hullIndices.length >= 2) {
+                    edges.push([hullIndices[hullIndices.length - 1], hullIndices[0]]);
+                }
+                return edges;
+            }
+
+            // ── 2. Graham Scan ──
+            function runGrahamScan(rawPoints) {
+                const steps = [];
+                let comparisons = 0, Comparisons = 0;
+                
+                // Map points to preserve their original index ID
+                const points = rawPoints.map((p, idx) => ({ ...p, idx }));
+                if (points.length < 3) return steps;
+
+                // PHASE A: Find Anchor
+                let anchorIdx = 0;
+                for (let i = 1; i < points.length; i++) {
+                    if (points[i].y < points[anchorIdx].y || (points[i].y === points[anchorIdx].y && points[i].x < points[anchorIdx].x)) {
+                        anchorIdx = i;
+                    }
+                }
+
+                steps.push({
+                    action: 'find-anchor', stepNumber: steps.length + 1,
+                    activePoints: [points[anchorIdx].idx], comparingPoints: [], hullPoints: [], rejectedPoints: [],
+                    hullEdges: [], candidateEdge: null, rejectedEdge: null, stack: [],
+                    pseudocodeLine: 2,
+                    explanation: `P${points[anchorIdx].idx} (${points[anchorIdx].x}, ${points[anchorIdx].y}) is chosen as the anchor (the bottom-most point) — it has the lowest Y-coordinate, placing it on the guaranteed bottom of the hull. All polar angles will be measured from here.`,
+                    comparisons, Comparisons
+                });
+
+                // Swap anchor to index 0
+                [points[0], points[anchorIdx]] = [points[anchorIdx], points[0]];
+                Comparisons++;
+                const anchor = points[0];
+
+                // PHASE B: Sort
+                const rest = points.slice(1);
+                rest.sort((a, b) => {
+                    comparisons++;
+                    const angleA = polarAngle(anchor, a);
+                    const angleB = polarAngle(anchor, b);
+                    
+                    steps.push({
+                        action: 'sort-compare', stepNumber: steps.length + 1,
+                        activePoints: [anchor.idx], comparingPoints: [a.idx, b.idx], hullPoints: [], rejectedPoints: [],
+                        hullEdges: [], candidateEdge: null, rejectedEdge: null, stack: [],
+                        pseudocodeLine: 4,
+                        explanation: `Sorting: P${a.idx} sits at angle ${angleA.toFixed(2)} rad from the anchor, P${b.idx} sits at ${angleB.toFixed(2)} rad. The smaller angle comes first — this orders all points in a counterclockwise sweep so the stack scan works correctly.`,
+                        comparisons, Comparisons
+                    });
+
+                    if (Math.abs(angleA - angleB) > 1e-9) return angleA - angleB;
+                    return distSq(anchor, a) - distSq(anchor, b); // Keep farthest behind so it replaces closer ones
+                });
+
+                // Filter collinear (keep farthest)
+                const filtered = [anchor];
+                for (let i = 0; i < rest.length; i++) {
+                    while (i < rest.length - 1 && Math.abs(cross(anchor, rest[i], rest[i+1])) < 1e-9) {
+                        i++; // skip the closer one
+                    }
+                    filtered.push(rest[i]);
+                }
+
+                steps.push({
+                    action: 'sort-done', stepNumber: steps.length + 1,
+                    activePoints: filtered.map(p => p.idx), comparingPoints: [], hullPoints: [], rejectedPoints: [],
+                    hullEdges: [], candidateEdge: null, rejectedEdge: null, stack: [],
+                    pseudocodeLine: 5,
+                    explanation: `All points are now sorted counterclockwise by angle from the anchor. ${filtered.length} points remain — collinear duplicates (points in a straight line from the anchor) were removed because they cannot be distinct hull corners. The stack scan begins now.`,
+                    comparisons, Comparisons
+                });
+
+                if (filtered.length < 3) return steps; // Fallback for degenerates
+
+                // PHASE C: Stack Scan
+                const stack = [filtered[0], filtered[1]];
+                steps.push({
+                    action: 'push', stepNumber: steps.length + 1,
+                    activePoints: [filtered[1].idx], comparingPoints: [], hullPoints: [], rejectedPoints: [],
+                    hullEdges: buildEdgePairs(stack.map(p=>p.idx)), candidateEdge: null, rejectedEdge: null, stack: stack.map(p=>p.idx),
+                    pseudocodeLine: 6,
+                    explanation: `Stack initialized with anchor P${stack[0].idx} and P${stack[1].idx}. We need two points to define a starting direction before turn-testing can begin.`,
+                    comparisons, Comparisons
+                });
+
+                for (let i = 2; i < filtered.length; i++) {
+                    const candidate = filtered[i];
+
+                    while (stack.length >= 2) {
+                        const top = stack[stack.length - 1];
+                        const below = stack[stack.length - 2];
+                        const cp = cross(below, top, candidate);
+                        comparisons++;
+
+                        steps.push({
+                            action: 'ccw-test', stepNumber: steps.length + 1,
+                            activePoints: [], comparingPoints: [below.idx, top.idx, candidate.idx], hullPoints: [], rejectedPoints: [],
+                            hullEdges: buildEdgePairs(stack.map(p=>p.idx)), candidateEdge: [top.idx, candidate.idx], rejectedEdge: null,
+                            stack: stack.map(p=>p.idx),
+                            pseudocodeLine: 8,
+                            explanation: cp > 0 ? `Turn test — P${below.idx} → P${top.idx} → P${candidate.idx}: cross product = ${cp.toFixed(2)} (positive = left turn ✓). The path bends outward here. P${top.idx} is a valid hull candidate and stays on the stack.` : `Turn test — P${below.idx} → P${top.idx} → P${candidate.idx}: cross product = ${cp.toFixed(2)} (${cp < 0 ? 'negative = right turn ✗' : 'zero = collinear'}). The path bends inward. P${top.idx} cannot be a hull vertex and will be removed.`,
+                            comparisons, Comparisons
+                        });
+
+                        if (cp > 0) break;
+
+                        const popped = stack.pop();
+                        Comparisons++;
+
+                        steps.push({
+                            action: 'pop', stepNumber: steps.length + 1,
+                            activePoints: [], comparingPoints: [], hullPoints: [], rejectedPoints: [popped.idx],
+                            hullEdges: buildEdgePairs(stack.map(p=>p.idx)), candidateEdge: null, rejectedEdge: [below.idx, popped.idx],
+                            stack: stack.map(p=>p.idx),
+                            pseudocodeLine: 9,
+                            explanation: `P${popped.idx} removed from stack. It caused an inward bend — meaning it sits inside the polygon formed by its neighbors. Hull vertices only appear on the outer boundary. The turn test now repeats with the new top of stack.`,
+                            comparisons, Comparisons
+                        });
+                    }
+
+                    stack.push(candidate);
+                    
+                    steps.push({
+                        action: 'push', stepNumber: steps.length + 1,
+                        activePoints: [candidate.idx], comparingPoints: [], hullPoints: [], rejectedPoints: [],
+                        hullEdges: buildEdgePairs(stack.map(p=>p.idx)), candidateEdge: null, rejectedEdge: null, stack: stack.map(p=>p.idx),
+                        pseudocodeLine: 10,
+                        explanation: `P${candidate.idx} added to hull candidates. The last three stack points form a valid left turn (outward bend), confirming P${candidate.idx} belongs on the boundary. Stack now holds ${stack.length} candidates.`,
+                        comparisons, Comparisons
+                    });
+                }
+
+                steps.push({
+                    action: 'hull-close', stepNumber: steps.length + 1,
+                    activePoints: [], comparingPoints: [], hullPoints: stack.map(p=>p.idx), rejectedPoints: [],
+                    hullEdges: buildEdgePairs(stack.map(p=>p.idx), true), candidateEdge: null, rejectedEdge: null, stack: stack.map(p=>p.idx),
+                    pseudocodeLine: 11,
+                    explanation: `Hull complete — ${stack.length} vertices found. Drawing the closing edge from P${stack[stack.length-1].idx} back to anchor P${stack[0].idx} seals the polygon. Every point not in this list lies strictly inside this boundary.`,
+                    comparisons, Comparisons
+                });
+
+                steps.push({
+                    action: 'done', stepNumber: steps.length + 1,
+                    activePoints: [], comparingPoints: [], hullPoints: stack.map(p=>p.idx), rejectedPoints: [],
+                    hullEdges: buildEdgePairs(stack.map(p=>p.idx), true), candidateEdge: null, rejectedEdge: null, stack: stack.map(p=>p.idx),
+                    pseudocodeLine: 11,
+                    explanation: `Finished. Graham Scan found the convex hull in O(n log n) time — dominated by the polar-angle sort. The stack performed at most ${stack.length * 2} push/pop operations total, making the scan phase O(n). Total comparisons: ${comparisons}.`,
+                    comparisons, Comparisons
+                });
+
+                return steps;
+            }
+
+            // ── 3. Jarvis March ──
+            function runJarvisMarch(rawPoints) {
+                const steps = [];
+                let comparisons = 0, Comparisons = 0;
+                const points = rawPoints.map((p, idx) => ({ ...p, idx }));
+
+                if (points.length < 3) return steps;
+
+                // PHASE A: Find Starting Point (leftmost)
+                let startIdx = 0;
+                for (let i = 1; i < points.length; i++) {
+                    if (points[i].x < points[startIdx].x || (points[i].x === points[startIdx].x && points[i].y < points[startIdx].y)) {
+                        startIdx = i;
+                    }
+                }
+
+                steps.push({
+                    action: 'select-start', stepNumber: steps.length + 1,
+                    activePoints: [points[startIdx].idx], comparingPoints: [], hullPoints: [], rejectedPoints: [],
+                    hullEdges: [], candidateEdge: null, rejectedEdge: null, stack: [],
+                    pseudocodeLine: 2,
+                    explanation: `P${points[startIdx].idx} (${points[startIdx].x}, ${points[startIdx].y}) is the leftmost point — guaranteed to be on the hull since nothing can be further left. Starting the gift-wrap here.`,
+                    comparisons, Comparisons
+                });
+
+                const hull = [];
+                let current = points[startIdx];
+                let currentPIdx = current.idx;
+
+                do {
+                    hull.push(currentPIdx);
+                    
+                    steps.push({
+                        action: 'wrap-confirm', stepNumber: steps.length + 1,
+                        activePoints: [currentPIdx], comparingPoints: [], hullPoints: [...hull], rejectedPoints: [],
+                        hullEdges: hull.length >= 2 ? buildEdgePairs(hull) : [], candidateEdge: null, rejectedEdge: null, stack: [],
+                        pseudocodeLine: 6,
+                        explanation: `P${currentPIdx} confirmed as hull vertex #${hull.length}. It was the most outward point from the previous position. Now scanning all ${points.length} points to find the next hull corner.`,
+                        comparisons, Comparisons
+                    });
+
+                    let next = points[0];
+                    if (next.idx === currentPIdx) next = points[1];
+
+                    for (let j = 0; j < points.length; j++) {
+                        if (points[j].idx === currentPIdx) continue;
+
+                        comparisons++;
+                        const cp = cross(current, next, points[j]);
+                        Comparisons++; // representing math operations
+
+                        steps.push({
+                            action: 'candidate-test', stepNumber: steps.length + 1,
+                            activePoints: [currentPIdx], comparingPoints: [next.idx, points[j].idx], hullPoints: [...hull], rejectedPoints: [],
+                            hullEdges: hull.length >= 2 ? buildEdgePairs(hull) : [], candidateEdge: [currentPIdx, points[j].idx], rejectedEdge: null, stack: [],
+                            pseudocodeLine: 8,
+                            explanation: (cp < 0 || (Math.abs(cp) < 1e-9 && distSq(current, points[j]) > distSq(current, next))) ? `Scan: P${points[j].idx} vs current best P${next.idx}. Cross product = ${cp.toFixed(2)} (negative = P${points[j].idx} is more outward). P${points[j].idx} becomes the new best candidate.` : `Scan: P${points[j].idx} vs current best P${next.idx}. Cross product = ${cp.toFixed(2)} (not negative = P${points[j].idx} is not more outward). Current best P${next.idx} is unchanged.`,
+                            comparisons, Comparisons
+                        });
+
+                        // If cp < 0, candidate is to the right (more CCW relative to hull rotation)
+                        const isMoreCCW = cp < 0; 
+                        const isCollinearAndFarther = Math.abs(cp) < 1e-9 && distSq(current, points[j]) > distSq(current, next);
+
+                        if (isMoreCCW || isCollinearAndFarther) {
+                            next = points[j];
+
+                            steps.push({
+                                action: 'candidate-update', stepNumber: steps.length + 1,
+                                activePoints: [currentPIdx], comparingPoints: [next.idx], hullPoints: [...hull], rejectedPoints: [],
+                                hullEdges: hull.length >= 2 ? buildEdgePairs(hull) : [], candidateEdge: [currentPIdx, next.idx], rejectedEdge: null, stack: [],
+                                pseudocodeLine: 10,
+                                explanation: `Best candidate updated to P${next.idx} — it is more outward than all previously tested points. This is the greedy choice: always keep the most outward point found so far.`,
+                                comparisons, Comparisons
+                            });
+                        }
+                    }
+
+                    current = next;
+                    currentPIdx = current.idx;
+
+                } while (currentPIdx !== points[startIdx].idx);
+
+                steps.push({
+                    action: 'hull-close', stepNumber: steps.length + 1,
+                    activePoints: [], comparingPoints: [], hullPoints: [...hull], rejectedPoints: [],
+                    hullEdges: buildEdgePairs(hull, true), candidateEdge: null, rejectedEdge: null, stack: [],
+                    pseudocodeLine: 12,
+                    explanation: `Hull complete — ${hull.length} vertices found. Closing the polygon back to start P${points[startIdx].idx}. Every point not on this boundary lies strictly inside it.`,
+                    comparisons, Comparisons
+                });
+
+                steps.push({
+                    action: 'done', stepNumber: steps.length + 1,
+                    activePoints: [], comparingPoints: [], hullPoints: [...hull], rejectedPoints: [],
+                    hullEdges: buildEdgePairs(hull, true), candidateEdge: null, rejectedEdge: null, stack: [],
+                    pseudocodeLine: 12,
+                    explanation: `Finished. Jarvis March wrapped the hull in O(n × h) time: ${points.length} points scanned for each of ${hull.length} hull vertices = ${points.length * hull.length} total cross product comparisons. Compare this to Graham Scan, which would take roughly ${Math.round(points.length * Math.log2(points.length))} operations on the same input.`,
+                    comparisons, Comparisons
+                });
+
+                return steps;
+            }
+
+            return {
+                runGrahamScan,
+                runJarvisMarch
+            };
+        })();
+
+        /**
+         * ==========================================
+         *  ANIMATION ENGINE (Phase 4)
+         * ==========================================
+         */
+        (() => {
+            const PLAYBACK = {
+                timeline: [],
+                currentStepIndex: -1,
+                isPlaying: false,
+                isBuildComplete: false,
+                speed: 1.0,
+                cancelToken: null
+            };
+
+            const pointLayer = document.getElementById('point-layer');
+            const edgeLayer = document.getElementById('edge-layer');
+            const stackContainer = document.getElementById('stack-container');
+            const historyBody = document.getElementById('history-body');
+            const pseudocodeEl = document.getElementById('pseudocode');
+
+            const btnBuild = document.getElementById('btn-build');
+            const btnPlay = document.getElementById('btn-play');
+            const btnPause = document.getElementById('btn-pause');
+            const btnStep = document.getElementById('btn-step');
+            const btnReset = document.getElementById('btn-reset');
+            const speedSlider = document.getElementById('speed-slider');
+
+            const GRAHAM_PSEUDOCODE = [
+                '<span class="syn-kw">function</span> <span class="syn-func">GrahamScan</span>(<span class="syn-var">points</span>):',
+                '  <span class="syn-var">anchor</span> <span class="syn-op">←</span> <span class="syn-func">min</span> <span class="syn-var">Y</span> point',
+                '  <span class="syn-kw">swap</span> <span class="syn-var">anchor</span> to index <span class="syn-num">0</span>',
+                '  <span class="syn-func">sort</span> by polar angle from <span class="syn-var">anchor</span>',
+                '  <span class="syn-func">filter</span> collinear (<span class="syn-kw">keep</span> <span class="syn-str">farthest</span>)',
+                '  <span class="syn-var">stack</span> <span class="syn-op">←</span> [<span class="syn-var">anchor</span>, <span class="syn-var">sorted</span>[<span class="syn-num">1</span>]]',
+                '  <span class="syn-kw">for</span> <span class="syn-var">i</span> <span class="syn-op">=</span> <span class="syn-num">2</span> <span class="syn-kw">to</span> <span class="syn-var">n</span><span class="syn-op">-</span><span class="syn-num">1</span>:',
+                '    <span class="syn-kw">while</span> <span class="syn-func">cross</span>(<span class="syn-var">s</span>[<span class="syn-num">-2</span>], <span class="syn-var">s</span>[<span class="syn-num">-1</span>], <span class="syn-var">p</span>[<span class="syn-var">i</span>]) <span class="syn-op">≤</span> <span class="syn-num">0</span>:',
+                '      <span class="syn-kw">pop</span> <span class="syn-var">stack</span>',
+                '    <span class="syn-kw">push</span> <span class="syn-var">p</span>[<span class="syn-var">i</span>]',
+                '  <span class="syn-kw">return</span> <span class="syn-var">stack</span>'
+            ];
+
+            const JARVIS_PSEUDOCODE = [
+                '<span class="syn-kw">function</span> <span class="syn-func">JarvisMarch</span>(<span class="syn-var">points</span>):',
+                '  <span class="syn-var">start</span> <span class="syn-op">←</span> <span class="syn-str">leftmost</span> point',
+                '  <span class="syn-var">hull</span> <span class="syn-op">←</span> []',
+                '  <span class="syn-var">current</span> <span class="syn-op">←</span> <span class="syn-var">start</span>',
+                '  <span class="syn-kw">do</span>:',
+                '    <span class="syn-var">hull</span>.<span class="syn-func">push</span>(<span class="syn-var">current</span>)',
+                '    <span class="syn-var">next</span> <span class="syn-op">←</span> <span class="syn-var">points</span>[<span class="syn-num">0</span>]',
+                '    <span class="syn-kw">for</span> <span class="syn-var">j</span> <span class="syn-op">=</span> <span class="syn-num">1</span> <span class="syn-kw">to</span> <span class="syn-var">n</span><span class="syn-op">-</span><span class="syn-num">1</span>:',
+                '      <span class="syn-kw">if</span> <span class="syn-func">cross</span>(<span class="syn-var">cur</span>, <span class="syn-var">next</span>, <span class="syn-var">p</span>[<span class="syn-var">j</span>]) <span class="syn-op"><</span> <span class="syn-num">0</span>:',
+                '        <span class="syn-var">next</span> <span class="syn-op">←</span> <span class="syn-var">p</span>[<span class="syn-var">j</span>]',
+                '    <span class="syn-var">current</span> <span class="syn-op">←</span> <span class="syn-var">next</span>',
+                '  <span class="syn-kw">while</span> <span class="syn-var">current</span> <span class="syn-op">≠</span> <span class="syn-var">start</span>'
+            ];
+
+            const T = window._T;
+
+            const EXPLANATIONS = {
+                graham: {
+                    1: `Entry point. We receive a list of (x, y) coordinates — our job is to return only the ones that form the outer boundary of the ${T('convex hull')}.`,
+                    2: `The bottom-most point is guaranteed to be on the hull — nothing can be below it. We call it the ${T('anchor')} because everything else is measured relative to it.`,
+                    3: `We move the ${T('anchor')} to position 0 so the sort in the next step has a fixed reference. Without this, the angle calculations have no consistent origin.`,
+                    4: `Each point is assigned a ${T('polar angle')} from the ${T('anchor')} — like reading its clock position. Sorting by this angle means we process points in a counterclockwise sweep, which is what makes the stack logic work correctly.`,
+                    5: `Two points at the exact same ${T('polar angle')} lie in a straight line from the ${T('anchor')} — they are ${T('collinear')}. We keep only the farthest one. The closer point would cause a zero ${T('cross product')} later, confusing the turn test.`,
+                    6: `We need at least two points to define a direction before turn-testing can begin. The ${T('anchor')} and the first sorted point form our initial edge. All future points will be tested against this starting direction.`,
+                    7: `We process the remaining points one at a time in angular order. Because they are sorted by ${T('polar angle')}, we are walking counterclockwise around the point cloud.`,
+                    8: `The ${T('cross product')} of the last two ${T('stack')} points and the new point tells us the turn direction. Positive = outward bend (left turn, keep going). Zero or negative = inward bend (right turn, the previous point must go).`,
+                    9: `A right turn means the middle point sits inside the polygon we are building. An interior point is never a ${T('hull vertex')}, so we remove it from the ${T('stack')}. We keep removing until the remaining points make a left turn — meaning we are back on the outer boundary.`,
+                    10: `A left turn means this point lies on or outside the current boundary — it is a valid ${T('hull vertex')} candidate. We add it to the ${T('stack')} and move on.`,
+                    11: `Every point that caused an inward bend (right turn) was already removed. Only the outer boundary points remain in the ${T('stack')}. Reading them in order gives the ${T('convex hull')} vertices in counterclockwise sequence.`
+                },
+                jarvis: {
+                    1: `Entry point. We receive all (x, y) coordinates and will return only those on the outer boundary of the ${T('convex hull')}, in the order we encounter them wrapping around.`,
+                    2: `The leftmost point is always on the hull — no point can be further left. It is our guaranteed starting position for the ${T('gift wrapping', 'gift wrapping')} process.`,
+                    3: `This list will grow one vertex at a time as we confirm each hull corner. At the end it contains only the outer boundary points in the order they were wrapped.`,
+                    4: `We begin the wrap at the starting point. Think of this as where your hand is positioned while pulling the string outward around the point cloud.`,
+                    5: `We repeat the wrapping process once per ${T('hull vertex')}. Because we do not know in advance how many hull vertices there are, this is a do-while loop rather than a counted for loop.`,
+                    6: `This point has been verified as the most outward from the previous position — it is confirmed as a ${T('hull vertex')} and added to our result.`,
+                    7: `We need a starting candidate to compare against before the search begins. We pick an arbitrary point and then improve on it. Any point works here because it will be replaced if anything more outward exists.`,
+                    8: `This is the core O(n) scan per hull vertex. We check every single point to find the one that is most outward — most ${T('counterclockwise')} from our current position. This full scan is why Jarvis can reach ${T('O(n²)')} in the worst case.`,
+                    9: `We compute the ${T('cross product')} of (current position, best candidate so far, point being tested). If the result is negative, the new point is further to the right — meaning it is more outward than our current best. This is the ${T('greedy', 'greedy')} choice.`,
+                    10: `We found a more outward point. It becomes the new best candidate. This may itself be replaced by an even more outward point later in the same scan loop.`,
+                    11: `After checking all n points, the winner is the most outward point from our current position. We move there officially and begin the next full scan from this new position.`,
+                    12: `When the full scan returns our starting point as the most outward candidate, we have completed the wrap. Every point further in any direction has already been visited. The ${T('convex hull')} is closed.`
+                }
+            };
+
+            function injectPseudocode(lines) {
+                const codeEl = pseudocodeEl.querySelector('code');
+                codeEl.innerHTML = '';
+                const activeAlgo = document.getElementById('btn-graham').classList.contains('active-algo') ? 'graham' : 'jarvis';
+                
+                lines.forEach((line, i) => {
+                    const lineNum = i + 1;
+                    const span = document.createElement('span');
+                    span.className = 'line';
+                    span.dataset.line = lineNum;
+                    span.innerHTML = `<span class="syn-comment" style="display:inline-block; width:24px; text-align:right; margin-right:8px; user-select:none;">${lineNum}</span>` + line;
+                    
+                    span.addEventListener('mouseenter', () => {
+                        document.getElementById('explanation-text').innerHTML = `💡 <em>Line ${lineNum}:</em> ${EXPLANATIONS[activeAlgo][lineNum]}`;
+                    });
+                    
+                    span.addEventListener('mouseleave', () => {
+                        // Restore current step explanation if available
+                        if (PLAYBACK.timeline.length > 0 && PLAYBACK.currentStepIndex >= 0) {
+                            const stepExp = PLAYBACK.timeline[PLAYBACK.currentStepIndex]?.explanation || '';
+                            document.getElementById('explanation-text').textContent = stepExp;
+                        } else {
+                            document.getElementById('explanation-text').innerHTML = 'Hover any pseudocode line to see what it does. Step through the animation to see the explanation update with real values.';
+                        }
+                    });
+                    
+                    codeEl.appendChild(span);
+                });
+            }
+
+            function delay(ms, signal) {
+                return new Promise((resolve, reject) => {
+                    const id = setTimeout(resolve, ms);
+                    signal.addEventListener('abort', () => {
+                        clearTimeout(id);
+                        reject(new DOMException('Aborted', 'AbortError'));
+                    }, { once: true });
+                });
+            }
+
+            function getFrameDelay() {
+                const BASE_DELAY_MS = 600;
+                return BASE_DELAY_MS / PLAYBACK.speed;
+            }
+
+            function updateButtonStates() {
+                const atEnd = PLAYBACK.currentStepIndex >= PLAYBACK.timeline.length - 1;
+                btnBuild.disabled = window.APP_STATE.rawPoints.length < 3;
+                btnPlay.disabled = !PLAYBACK.isBuildComplete || PLAYBACK.isPlaying || atEnd;
+                btnPause.disabled = !PLAYBACK.isPlaying;
+                btnStep.disabled = !PLAYBACK.isBuildComplete || PLAYBACK.isPlaying || atEnd;
+                btnReset.disabled = !PLAYBACK.isBuildComplete && PLAYBACK.currentStepIndex === -1 && !PLAYBACK.isPlaying;
+                document.getElementById('btn-load-points').disabled = PLAYBACK.isPlaying;
+            }
+
+            function resetVisualState() {
+                pointLayer.querySelectorAll('circle').forEach(c => {
+                    c.className.baseVal = 'point-default';
+                });
+                while (edgeLayer.firstChild) edgeLayer.removeChild(edgeLayer.firstChild);
+                pseudocodeEl.querySelectorAll('.line').forEach(l => l.classList.remove('line-active'));
+                stackContainer.innerHTML = '';
+                document.getElementById('count-compare').textContent = '0';
+                document.getElementById('count-cross').textContent = '0';
+            }
+
+            function clearHistoryTable() {
+                historyBody.innerHTML = '';
+            }
+
+            function updateStepCounter() {
+                const current = PLAYBACK.currentStepIndex + 1;
+                const total = PLAYBACK.timeline.length;
+                document.getElementById('step-counter').textContent = `Step ${current} / ${total}`;
+                if (current >= total && total > 0) {
+                    document.getElementById('status-label').textContent = 'Done';
+                }
+            }
+
+            // ── Render Dispatcher ──
+            function renderFrame(snapshot) {
+                // 1. Update SVG Point CSS Classes
+                const circles = pointLayer.querySelectorAll('circle');
+                circles.forEach(c => c.className.baseVal = 'point-default');
+
+                snapshot.hullPoints.forEach(idx => {
+                    const c = pointLayer.querySelector(`[data-index="${idx}"]`);
+                    if (c) c.className.baseVal = 'point-hull';
+                });
+                snapshot.activePoints.forEach(idx => {
+                    const c = pointLayer.querySelector(`[data-index="${idx}"]`);
+                    if (c) c.className.baseVal = 'point-active';
+                });
+                snapshot.comparingPoints.forEach(idx => {
+                    const c = pointLayer.querySelector(`[data-index="${idx}"]`);
+                    if (c) c.className.baseVal = 'point-comparing'; // Pulses
+                });
+                snapshot.rejectedPoints.forEach(idx => {
+                    const c = pointLayer.querySelector(`[data-index="${idx}"]`);
+                    // This class is not in current CSS, we can fallback to just point-default or write inline
+                    // Using styling defined in Phase 1? Wait, Phase 1 had no point-rejected. 
+                    // Let's inject a custom inline style for rose flash, or set it to point-default.
+                    // Let's add cross compat: 'point-comparing' with rose stroke if needed.
+                    if (c) {
+                        c.className.baseVal = 'point-default';
+                        c.style.fill = 'var(--accent-rose)';
+                    }
+                });
+
+                // Clear inline injected styles if a point moves away from rejected state
+                circles.forEach(c => {
+                    if (c.className.baseVal !== 'point-default' || !snapshot.rejectedPoints.includes(parseInt(c.getAttribute('data-index')))) {
+                        c.style.fill = '';
+                    }
+                });
+
+                // 2. SVG Edges
+                while (edgeLayer.firstChild) edgeLayer.removeChild(edgeLayer.firstChild);
+                
+                const createSVGLine = (x1, y1, x2, y2, cssClass) => {
+                    const line = document.createElementNS(window.SVG_NS, 'line');
+                    line.setAttribute('x1', x1);
+                    line.setAttribute('y1', y1);
+                    line.setAttribute('x2', x2);
+                    line.setAttribute('y2', y2);
+                    line.className.baseVal = cssClass;
+                    return line;
+                };
+
+                const getPt = idx => window.APP_STATE.svgPoints.find(p => p.id === idx);
+
+                snapshot.hullEdges.forEach(([fromIdx, toIdx]) => {
+                    const from = getPt(fromIdx), to = getPt(toIdx);
+                    if (from && to) edgeLayer.appendChild(createSVGLine(from.x, from.y, to.x, to.y, 'edge-hull'));
+                });
+
+                if (snapshot.candidateEdge) {
+                    const [fromIdx, toIdx] = snapshot.candidateEdge;
+                    const from = getPt(fromIdx), to = getPt(toIdx);
+                    if (from && to) edgeLayer.appendChild(createSVGLine(from.x, from.y, to.x, to.y, 'edge-comparing'));
+                }
+
+                if (snapshot.rejectedEdge) {
+                    const [fromIdx, toIdx] = snapshot.rejectedEdge;
+                    const from = getPt(fromIdx), to = getPt(toIdx);
+                    if (from && to) edgeLayer.appendChild(createSVGLine(from.x, from.y, to.x, to.y, 'edge-rejected'));
+                }
+
+                // 3. Pseudocode Highlighting
+                pseudocodeEl.querySelectorAll('.line').forEach(l => l.classList.remove('line-active'));
+                const targetLine = pseudocodeEl.querySelector(`[data-line="${snapshot.pseudocodeLine}"]`);
+                if (targetLine) {
+                    targetLine.classList.add('line-active');
+                    targetLine.scrollIntoView({ block: 'nearest', behavior: 'smooth' });
+                }
+
+                // 4. Stack Visualizer
+                stackContainer.innerHTML = '';
+                if (!snapshot.stack || snapshot.stack.length === 0) {
+                    const empty = document.createElement('div');
+                    empty.className = 'stack-item';
+                    empty.textContent = '(empty)';
+                    empty.style.opacity = '0.4';
+                    stackContainer.appendChild(empty);
+                } else {
+                    snapshot.stack.forEach(idx => {
+                        const item = document.createElement('div');
+                        item.className = 'stack-item';
+                        item.textContent = `P${idx}`;
+                        stackContainer.appendChild(item);
+                    });
+                }
+
+                // 5. History Table
+                historyBody.innerHTML = '';
+                for (let i = 0; i <= PLAYBACK.currentStepIndex; i++) {
+                    const snap = PLAYBACK.timeline[i];
+                    const row = document.createElement('tr');
+                    row.dataset.step = snap.stepNumber - 1;
+                    if (i === PLAYBACK.currentStepIndex) {
+                        row.style.borderLeft = '2px solid var(--accent-blue)';
+                    }
+                    row.style.cursor = 'pointer';
+                    row.addEventListener('click', () => {
+                        if (PLAYBACK.isPlaying) btnPause.click();
+                        PLAYBACK.currentStepIndex = parseInt(row.dataset.step);
+                        renderFrame(PLAYBACK.timeline[PLAYBACK.currentStepIndex]);
+                        updateStepCounter();
+                        updateButtonStates();
+                        document.getElementById('status-label').textContent = 'Paused';
+                    });
+                    const badgeClass = `action-${snap.action}`;
+                    const niceAction = snap.action.split('-').map(w => w[0].toUpperCase() + w.slice(1)).join(' ');
+                    row.innerHTML = `
+                        <td>${snap.stepNumber}</td>
+                        <td><span class="${badgeClass}" style="color:var(--accent-blue);font-weight:bold;">${niceAction}</span></td>
+                        <td>${snap.explanation}</td>
+                    `;
+                    historyBody.insertBefore(row, historyBody.firstChild);
+                }
+
+                // 6. Explanation
+                document.getElementById('explanation-text').textContent = snapshot.explanation;
+
+                // 7. Metrics
+                document.getElementById('count-compare').textContent = snapshot.comparisons;
+                document.getElementById('count-cross').textContent = snapshot.Comparisons;
+
+                if (window.updateChartDot) {
+                    window.updateChartDot(snapshot.comparisons);
+                }
+            }
+
+            // ── Event Loop ──
+            async function play() {
+                if (PLAYBACK.isPlaying) return;
+                if (!PLAYBACK.isBuildComplete) return;
+                if (PLAYBACK.currentStepIndex >= PLAYBACK.timeline.length - 1) return;
+
+                PLAYBACK.isPlaying = true;
+                PLAYBACK.cancelToken = new AbortController();
+                const signal = PLAYBACK.cancelToken.signal;
+                updateButtonStates();
+
+                try {
+                    while (PLAYBACK.currentStepIndex < PLAYBACK.timeline.length - 1) {
+                        document.getElementById('status-label').textContent = 'Playing';
+                        PLAYBACK.currentStepIndex++;
+                        renderFrame(PLAYBACK.timeline[PLAYBACK.currentStepIndex]);
+                        updateStepCounter();
+
+                        await delay(getFrameDelay(), signal);
+                    }
+                } catch (err) {
+                    if (err.name !== 'AbortError') throw err;
+                } finally {
+                    PLAYBACK.isPlaying = false;
+                    updateButtonStates();
+                }
+            }
+
+            // ── Controller Handlers ──
+            btnBuild.addEventListener('click', () => {
+                const isGraham = document.getElementById('btn-graham').classList.contains('active-algo');
+                
+                injectPseudocode(isGraham ? GRAHAM_PSEUDOCODE : JARVIS_PSEUDOCODE);
+                
+                PLAYBACK.timeline = isGraham 
+                    ? ALGORITHMS.runGrahamScan(window.APP_STATE.rawPoints)
+                    : ALGORITHMS.runJarvisMarch(window.APP_STATE.rawPoints);
+
+                PLAYBACK.currentStepIndex = -1;
+                PLAYBACK.isBuildComplete = true;
+                if (PLAYBACK.isPlaying) PLAYBACK.cancelToken.abort();
+                PLAYBACK.isPlaying = false;
+
+                resetVisualState();
+                clearHistoryTable();
+
+                document.getElementById('step-counter').textContent = `Step 0 / ${PLAYBACK.timeline.length}`;
+                document.getElementById('status-label').textContent = 'Ready';
+                document.getElementById('explanation-text').textContent = `${PLAYBACK.timeline.length} steps generated. Press Step to walk through one decision at a time, or Play to watch the full animation. Hover pseudocode lines for explanations of each line.`;
+
+                updateButtonStates();
+
+                // Phase 5: Render Complexity Chart
+                if (window.renderChart) {
+                    const activeAlgo = isGraham ? 'graham' : 'jarvis';
+                    window.renderChart(window.APP_STATE.rawPoints.length, 0, activeAlgo);
+                }
+            });
+
+            btnPlay.addEventListener('click', play);
+
+            btnPause.addEventListener('click', () => {
+                if (PLAYBACK.isPlaying) {
+                    PLAYBACK.cancelToken.abort();
+                    document.getElementById('status-label').textContent = 'Paused';
+                }
+            });
+
+            btnStep.addEventListener('click', () => {
+                if (!PLAYBACK.isBuildComplete) return;
+                if (PLAYBACK.isPlaying) PLAYBACK.cancelToken.abort();
+                if (PLAYBACK.currentStepIndex >= PLAYBACK.timeline.length - 1) return;
+
+                PLAYBACK.currentStepIndex++;
+                renderFrame(PLAYBACK.timeline[PLAYBACK.currentStepIndex]);
+                updateStepCounter();
+                updateButtonStates();
+                document.getElementById('status-label').textContent = 'Paused';
+            });
+
+            btnReset.addEventListener('click', () => {
+                if (PLAYBACK.isPlaying) PLAYBACK.cancelToken.abort();
+
+                PLAYBACK.currentStepIndex = -1;
+                PLAYBACK.isBuildComplete = false;
+                PLAYBACK.timeline = [];
+
+                resetVisualState();
+                clearHistoryTable();
+                
+                window.renderPoints(window.APP_STATE.svgPoints, window.APP_STATE.viewBox);
+
+                document.getElementById('step-counter').textContent = 'Step 0 / 0';
+                document.getElementById('status-label').textContent = 'Idle';
+                document.getElementById('explanation-text').textContent = 'Reset. Points are still loaded — click Build Steps to run again, or load a different preset to try a new input.';
+
+                updateButtonStates();
+            });
+
+            speedSlider.addEventListener('input', function() {
+                PLAYBACK.speed = parseFloat(this.value);
+                document.getElementById('speed-value').innerHTML = PLAYBACK.speed.toFixed(2) + '&times;';
+            });
+
+            // ── Algorithm Overview Data ──
+            const ALGO_OVERVIEWS = {
+                graham: {
+                    title: 'Graham Scan \u2014 Overview',
+                    icon: '\ud83d\udcd0',
+                    paradigm: 'Sort + Incremental Stack',
+                    core: `Imagine stretching a rubber band around all your points and releasing it — the shape it snaps into is the ${T('convex hull')}. Graham Scan finds this shape efficiently by first picking a guaranteed starting point (the ${T('anchor')} — the bottom-most point), then sorting all other points by the angle they make from there (their ${T('polar angle')}), and finally walking through them in order. As it walks, it uses one rule: if the path ever bends inward (a right turn), the previous point was wrong and gets removed from the ${T('stack')}. Only outward-bending points survive.`,
+                    steps: [
+                        `Find the bottom-most point — called the ${T('anchor')}. It is guaranteed to be on the hull because no point can be "outside" of it going downward.`,
+                        `Measure the ${T('polar angle')} each other point makes from the anchor (like reading angles on a clock face). Sort all points by this angle so we process them in a clean counterclockwise sweep.`,
+                        `Start building the hull: put the anchor and the first sorted point into the ${T('stack')} — a working list of current hull candidates.`,
+                        `For each remaining point, compute the ${T('cross product')} of the last two stack points and the new point to detect which way the path is bending.`,
+                        `If the bend is inward (right turn, cross product ≤ 0), the middle point is inside the hull and must be removed from the stack. Keep removing until the bend is outward again.`,
+                        `Add the current point to the stack and continue to the next point.`,
+                        `When all points are processed, the stack holds exactly the ${T('hull vertices')} — every interior point was eliminated in the step above.`
+                    ],
+                    badges: [
+                        { label: 'Worst', value: 'O(n log n)', cls: '' },
+                        { label: 'Best', value: 'O(n log n)', cls: 'best' },
+                        { label: 'Space', value: 'O(n)', cls: 'space' }
+                    ],
+                    when: `Use Graham Scan as your default choice. Its ${T('O(n log n)')} time is dominated by the sort, so performance is predictable regardless of what the points look like. Real-world uses include collision detection in game engines, bounding regions for geographic data, and image recognition. If you have a large dataset and do not know in advance how many points will end up on the hull, Graham Scan is the safer pick.`,
+                    extraTop: '',
+                    concepts: [
+                        `<strong>Cross Product:</strong> The ${T('cross product')} of three points O→A→B gives a number whose sign reveals the turn direction. Positive = left turn (path bends outward, point is a hull candidate). Negative = right turn (path bends inward, middle point must be removed). Zero = all three are ${T('collinear')} — in a straight line.`,
+                        `<strong>Why Collinear Points Break Things:</strong> ${T('Collinear', 'collinear')} points share the same polar angle from the anchor. Keeping two of them causes the cross product to return zero (neither left nor right), which prevents the algorithm from correctly deciding whether to pop. We keep only the farthest one to avoid this failure.`,
+                        `<strong>The Sort Is Not Optional:</strong> Without sorting by ${T('polar angle')}, points arrive in unpredictable order. The stack would push and pop incorrectly, producing a tangled non-convex path instead of a hull. The sort is the mechanism that makes the greedy stack logic correct — not a speed optimization.`,
+                        `<strong>Common Mistake — Orientation:</strong> In screen coordinates, Y increases downward (opposite to math). This flips the sign of the ${T('cross product')} result. A common bug is implementing the turn test for math coordinates but running it in screen coordinates — producing a hull that wraps the wrong way.`
+                    ]
+                },
+                jarvis: {
+                    title: 'Jarvis March \u2014 Overview',
+                    icon: '\ud83c\udf81',
+                    paradigm: 'Greedy (Gift Wrapping)',
+                    core: `Picture wrapping a piece of string tightly around the outside of all your points — pulling it as far outward as possible at each step. This is ${T('gift wrapping', 'gift wrapping')}, and it is exactly what Jarvis March does. It starts from the leftmost point (guaranteed to be on the ${T('convex hull')}) and at each step asks: of all remaining points, which one is the most outward? That point becomes the next corner. We keep going until the string returns to where it started.`,
+                    steps: [
+                        `Start at the leftmost point — the one with the smallest x-coordinate. It is always on the hull because nothing can be further left.`,
+                        `From the current point, look at every other point and ask: which one is the most outward? We call this searching for the best candidate.`,
+                        `Use the ${T('cross product')} to compare each candidate: if a new point sits further to the right of our current best direction, it becomes the new best.`,
+                        `After checking all points, the winner is the next ${T('hull vertex')}. Draw an edge to it.`,
+                        `Move to that point and repeat the full search from there.`,
+                        `Stop when the search returns the starting point — we have wrapped all the way around and the hull is closed.`
+                    ],
+                    badges: [
+                        { label: 'Worst', value: 'O(n\u00b2)', cls: '' },
+                        { label: 'Best', value: 'O(n)', cls: 'best' },
+                        { label: 'Space', value: 'O(h)', cls: 'space' }
+                    ],
+                    when: `Use Jarvis March when you expect only a few points to be on the hull compared to the total. Its time is ${T('O(nh)')} — n is the total points, h is the hull points found. When h is small, this beats Graham's ${T('O(n log n)')}. However, when points form a circle or convex polygon (every point is on the hull, so h = n), Jarvis degrades to ${T('O(n²)')} — far slower than Graham. Jarvis is the simpler algorithm to understand and explain step by step, making it ideal for learning.`,
+                    concepts: [
+                        `<strong>Cross Product:</strong> The ${T('cross product')} of three points O→A→B gives a number whose sign reveals the turn direction. Positive = left turn (path bends outward). Negative = right turn (path bends inward, point is more outward than current best). Zero = ${T('collinear')}.`,
+                        `<strong>Why Collinear Points Break Things:</strong> When two candidates have the exact same angle from the current position, the cross product returns zero. Without a tiebreaker (keep the farther one), the algorithm may stop at the closer point and miss the true hull corner.`,
+                        `<strong>Worst Case — The Circle Problem:</strong> When all points lie on a circle, every single point is on the ${T('convex hull')}, so h = n. Jarvis performs n comparisons for each of n hull vertices: n × n = ${T('O(n²)')} total. For 100 points that is 10,000 comparisons. Graham Scan always takes only ~700.`,
+                        `<strong>Common Mistake — Orientation:</strong> The ${T('cross product')} sign that means "more outward" depends on your coordinate system. In screen coordinates (Y increases downward), a negative cross product means the candidate is further to the right. Getting this backwards produces a hull that spirals inward instead of wrapping outward.`
+                    ],
+                    extraTop: `
+<div class="tip-callout" style="margin-top:var(--sp-2)">
+  <span class="tip-icon">✅</span>
+  <span><strong>Why ${T('Greedy', 'greedy')} Works Here:</strong> At each step, the most outward point is provably the next hull vertex — no interior point can ever become a ${T('hull vertex')}. This means the greedy choice (always pick the most outward) is always correct. Unlike problems such as shortest path where greedy can fail, here there is no future scenario where picking a less-outward point now leads to a better result later.</span>
+</div>
+<div class="tip-callout" style="margin-top:var(--sp-2); border-color:var(--accent-rose); background:rgba(225,29,72,0.05)">
+  <span class="tip-icon" style="color:var(--accent-rose)">🚨</span>
+  <span><strong>When ${T('Greedy', 'greedy')} Fails:</strong> A naive greedy approach such as "always pick the nearest unvisited point" does NOT produce a ${T('convex hull')} — it produces a traveling-salesman-style path that zigzags through interior points. The diagram below shows four points where nearest-neighbor greedy visits them in order A→B→C→D, which crosses itself and is clearly not the outer boundary.
+  <svg width="120" height="80" viewBox="0 0 120 80" style="margin-top:10px;border-radius:4px;background:rgba(255,255,255,0.03);display:block;">
+    <circle cx="20" cy="60" r="3" fill="#94A3B8"/>
+    <text x="12" y="75" fill="#94A3B8" font-size="10">A</text>
+    <circle cx="50" cy="40" r="3" fill="#94A3B8"/>
+    <text x="50" y="32" fill="#94A3B8" font-size="10">B</text>
+    <circle cx="80" cy="60" r="3" fill="#94A3B8"/>
+    <text x="80" y="75" fill="#94A3B8" font-size="10">C</text>
+    <circle cx="100" cy="20" r="3" fill="#94A3B8"/>
+    <text x="105" y="15" fill="#94A3B8" font-size="10">D</text>
+    <polyline points="20,60 50,40 80,60 100,20" fill="none" stroke="var(--accent-rose)" stroke-width="1.5" stroke-dasharray="3 3"/>
+    <text x="10" y="12" fill="var(--accent-rose)" font-size="8">✗ wrong path</text>
+  </svg>
+  </span>
+</div>
+                    `
+                }
+            };
+
+            function populateOverview(algoKey) {
+                const data = ALGO_OVERVIEWS[algoKey];
+                document.getElementById('overview-title').textContent = data.title;
+                document.querySelector('#algo-overview .algo-icon').textContent = data.icon;
+                
+                const paradigmEl = document.getElementById('overview-paradigm');
+                if (paradigmEl) paradigmEl.textContent = data.paradigm || '';
+                
+                const extraTopEl = document.getElementById('overview-extra-top');
+                if (extraTopEl) extraTopEl.innerHTML = data.extraTop || '';
+
+                document.getElementById('overview-core').innerHTML = data.core;
+                
+                const ol = document.getElementById('overview-steps');
+                ol.innerHTML = '';
+                data.steps.forEach(step => {
+                    const li = document.createElement('li');
+                    li.innerHTML = step;
+                    ol.appendChild(li);
+                });
+
+                const badges = document.getElementById('overview-badges');
+                badges.innerHTML = '';
+                data.badges.forEach(b => {
+                    const d = document.createElement('div');
+                    d.className = 'complexity-badge ' + b.cls;
+                    d.innerHTML = b.label + ': <span>' + b.value + '</span>';
+                    badges.appendChild(d);
+                });
+
+                document.getElementById('overview-when').innerHTML = data.when;
+                
+                const conceptsEl = document.getElementById('overview-concepts-container');
+                if (conceptsEl && data.concepts) {
+                    let html = `<details class="concepts-details">
+                        <summary class="overview-heading" style="cursor: pointer; user-select: none; margin-top:0;">Key Concepts & Common Mistakes <span>▼</span></summary>`;
+                    data.concepts.forEach(concept => {
+                        const isMistake = concept.includes('Mistake') || concept.includes('completely') || concept.includes('Worst Case');
+                        const icon = isMistake ? '🚨' : '⚠️';
+                        const calloutStyle = isMistake ? 'border-color:var(--accent-rose); background:rgba(225,29,72,0.05)' : '';
+                        html += `
+                        <div class="tip-callout" style="margin-top:var(--sp-2); ${calloutStyle}">
+                            <span class="tip-icon" style="${isMistake ? 'color:var(--accent-rose)' : ''}">${icon}</span>
+                            <span>${concept}</span>
+                        </div>`;
+                    });
+                    html += `</details>`;
+                    conceptsEl.innerHTML = html;
+                }
+            }
+
+            // Re-render points on algorithm switch strictly to clear active UI
+            // Also inject pseudocode and overview immediately on algorithm selection
+            document.querySelectorAll('#algo-select button').forEach(btn => {
+                btn.addEventListener('click', () => {
+                    if (PLAYBACK.isPlaying) btnPause.click();
+                    if (PLAYBACK.isBuildComplete) btnReset.click();
+                    const isGraham = btn.id === 'btn-graham';
+                    injectPseudocode(isGraham ? GRAHAM_PSEUDOCODE : JARVIS_PSEUDOCODE);
+                    populateOverview(isGraham ? 'graham' : 'jarvis');
+                    document.getElementById('worst-case-tag').style.display = isGraham ? 'none' : 'inline';
+                    document.getElementById('circle-count-tag').style.display = isGraham ? 'inline' : 'none';
+                });
+            });
+
+            // Initialise pseudocode + overview to Graham Scan on page load
+            injectPseudocode(GRAHAM_PSEUDOCODE);
+            populateOverview('graham');
+
+            // Expose a hook to let Load Points reset playback
+            const originalLoad = window.APP_STATE; 
+            // We can implicitly clear by listening to the same load points button:
+            document.getElementById('btn-load-points').addEventListener('click', () => {
+                if (PLAYBACK.isBuildComplete) btnReset.click();
+            });
+
+        })();
+
+        /**
+         * ==========================================
+         *  COMPLEXITY CHART ENGINE (Phase 5)
+         * ==========================================
+         */
+        (() => {
+            const PLOT = { x: 45, y: 15, w: 245, h: 160 };
+
+            const grahamOps = (n) => n * Math.log2(n);
+            const jarvisWorstOps = (n) => n * n;
+            const jarvisBestOps = (n) => 4 * n;
+
+            function generateCurvePoints(fn, nMax) {
+                const SAMPLES = 50;
+                const step = (nMax - 2) / (SAMPLES - 1);
+                const points = [];
+                for (let i = 0; i < SAMPLES; i++) {
+                    const n = 2 + i * step;
+                    points.push({ n, ops: fn(n) });
+                }
+                return points;
+            }
+
+            function mapToChart(n, ops, nMax, yMax) {
+                const xNorm = (n - 2) / (nMax - 2);
+                const yNorm = ops / yMax;
+                const sx = PLOT.x + xNorm * PLOT.w;
+                const sy = PLOT.y + PLOT.h - yNorm * PLOT.h;
+                return { x: sx, y: sy };
+            }
+
+            function createLine(x1, y1, x2, y2) {
+                const line = document.createElementNS(window.SVG_NS, 'line');
+                line.setAttribute('x1', x1); line.setAttribute('y1', y1);
+                line.setAttribute('x2', x2); line.setAttribute('y2', y2);
+                return line;
+            }
+
+            function createText(x, y, content, anchor, fontSize) {
+                const text = document.createElementNS(window.SVG_NS, 'text');
+                text.setAttribute('x', x); text.setAttribute('y', y);
+                text.setAttribute('text-anchor', anchor);
+                text.setAttribute('font-size', fontSize);
+                text.setAttribute('fill', 'var(--text-secondary)');
+                text.setAttribute('font-family', 'var(--font-mono)');
+                text.textContent = content;
+                return text;
+            }
+
+            function drawAxes(svg, nMax, yMax) {
+                const axesGroup = svg.getElementById('chart-axes');
+
+                const xAxis = createLine(PLOT.x, PLOT.y + PLOT.h, PLOT.x + PLOT.w, PLOT.y + PLOT.h);
+                xAxis.style = 'stroke: var(--text-secondary); stroke-width: 1;';
+                axesGroup.appendChild(xAxis);
+
+                const yAxis = createLine(PLOT.x, PLOT.y, PLOT.x, PLOT.y + PLOT.h);
+                yAxis.style = 'stroke: var(--text-secondary); stroke-width: 1;';
+                axesGroup.appendChild(yAxis);
+
+                const xLabel = createText(PLOT.x + PLOT.w / 2, 198, 'n (points)', 'middle', 9);
+                axesGroup.appendChild(xLabel);
+
+                const yLabel = createText(8, PLOT.y + PLOT.h / 2, 'ops', 'middle', 9);
+                yLabel.setAttribute('transform', `rotate(-90, 8, ${PLOT.y + PLOT.h / 2})`);
+                axesGroup.appendChild(yLabel);
+
+                for (let i = 0; i <= 4; i++) {
+                    const nVal = Math.round(2 + (nMax - 2) * (i / 4));
+                    const sx = PLOT.x + (i / 4) * PLOT.w;
+                    const tick = createText(sx, PLOT.y + PLOT.h + 14, nVal.toString(), 'middle', 8);
+                    axesGroup.appendChild(tick);
+                }
+
+                for (let i = 0; i <= 3; i++) {
+                    const opsVal = Math.round(yMax * (i / 3));
+                    const sy = PLOT.y + PLOT.h - (i / 3) * PLOT.h;
+                    const tick = createText(PLOT.x - 5, sy + 3, opsVal.toString(), 'end', 8);
+                    axesGroup.appendChild(tick);
+                }
+            }
+
+            function drawChartGrid(svg) {
+                const gridGroup = svg.getElementById('chart-grid');
+                for (let i = 1; i <= 3; i++) {
+                    const sy = PLOT.y + PLOT.h - (i / 3) * PLOT.h;
+                    const line = createLine(PLOT.x, sy, PLOT.x + PLOT.w, sy);
+                    line.style = 'stroke: rgba(255,255,255,0.06); stroke-width: 0.5; stroke-dasharray: 3 3;';
+                    gridGroup.appendChild(line);
+                }
+                for (let i = 1; i <= 3; i++) {
+                    const sx = PLOT.x + (i / 4) * PLOT.w;
+                    const line = createLine(sx, PLOT.y, sx, PLOT.y + PLOT.h);
+                    line.style = 'stroke: rgba(255,255,255,0.06); stroke-width: 0.5; stroke-dasharray: 3 3;';
+                    gridGroup.appendChild(line);
+                }
+            }
+
+            function drawCurve(svg, fn, nMax, yMax, color) {
+                const curveGroup = svg.getElementById('chart-curves');
+                const points = generateCurvePoints(fn, nMax);
+                let d = '';
+                points.forEach((pt, i) => {
+                    const mapped = mapToChart(pt.n, pt.ops, nMax, yMax);
+                    mapped.y = Math.max(PLOT.y, Math.min(PLOT.y + PLOT.h, mapped.y));
+                    d += (i === 0 ? 'M' : 'L') + `${mapped.x.toFixed(1)} ${mapped.y.toFixed(1)} `;
+                });
+                const path = document.createElementNS(window.SVG_NS, 'path');
+                path.setAttribute('d', d);
+                path.setAttribute('fill', 'none');
+                path.setAttribute('stroke', color);
+                path.setAttribute('stroke-width', '1.8');
+                path.setAttribute('stroke-linecap', 'round');
+                path.setAttribute('stroke-linejoin', 'round');
+                curveGroup.appendChild(path);
+            }
+
+            function drawCurrentDot(svg, n, actualOps, nMax, yMax, algo) {
+                const dotGroup = svg.getElementById('chart-dot');
+                const mapped = mapToChart(n, actualOps, nMax, yMax);
+                mapped.y = Math.max(PLOT.y, Math.min(PLOT.y + PLOT.h, mapped.y));
+
+                const glow = document.createElementNS(window.SVG_NS, 'circle');
+                glow.setAttribute('cx', mapped.x);
+                glow.setAttribute('cy', mapped.y);
+                glow.setAttribute('r', 6);
+                glow.setAttribute('fill', 'none');
+                glow.setAttribute('stroke', algo === 'graham' ? 'var(--accent-blue)' : 'var(--accent-green)');
+                glow.setAttribute('stroke-width', 1.5);
+                glow.setAttribute('opacity', 0.5);
+                glow.classList.add('pulse-ring');
+                dotGroup.appendChild(glow);
+
+                const dot = document.createElementNS(window.SVG_NS, 'circle');
+                dot.setAttribute('cx', mapped.x);
+                dot.setAttribute('cy', mapped.y);
+                dot.setAttribute('r', 3.5);
+                dot.setAttribute('fill', algo === 'graham' ? 'var(--accent-blue)' : 'var(--accent-green)');
+                dotGroup.appendChild(dot);
+
+                const label = createText(mapped.x + 8, mapped.y - 5, `n=${n}, ${actualOps} ops`, 'start', 7.5);
+                label.setAttribute('fill', 'var(--text-primary)');
+                dotGroup.appendChild(label);
+            }
+
+            function drawLegend(svg) {
+                const legendGroup = svg.getElementById('chart-legend');
+                const entries = [
+                    { color: 'var(--accent-blue)',  label: 'O(n log n)' },
+                    { color: 'var(--accent-green)', label: 'O(n)' },
+                    { color: 'var(--accent-rose)',  label: 'O(n²)' },
+                ];
+                entries.forEach((entry, i) => {
+                    const y = PLOT.y + 6 + i * 12;
+                    const line = createLine(PLOT.x + PLOT.w - 65, y, PLOT.x + PLOT.w - 50, y);
+                    line.style = `stroke: ${entry.color}; stroke-width: 2;`;
+                    legendGroup.appendChild(line);
+
+                    const text = createText(PLOT.x + PLOT.w - 47, y + 3, entry.label, 'start', 7);
+                    text.setAttribute('fill', 'var(--text-secondary)');
+                    legendGroup.appendChild(text);
+                });
+            }
+
+            window.renderChart = function(currentN, actualOps, activeAlgo) {
+                const container = document.getElementById('chart-container');
+                container.innerHTML = '';
+
+                
+                const svg = document.createElementNS(window.SVG_NS, 'svg');
+                svg.id = 'chart-svg';
+                svg.setAttribute('viewBox', '0 0 300 200');
+                svg.setAttribute('preserveAspectRatio', 'xMidYMid meet');
+                svg.style.cssText = 'width:100%;height:100%;display:block;';
+                container.appendChild(svg);
+
+                ['chart-grid', 'chart-curves', 'chart-dot', 'chart-axes', 'chart-legend'].forEach(id => {
+                    const g = document.createElementNS(window.SVG_NS, 'g');
+                    g.id = id;
+                    svg.appendChild(g);
+                });
+
+                const N_MAX = Math.max(30, currentN + 10);
+                const Y_MAX = jarvisWorstOps(N_MAX);
+
+                drawAxes(svg, N_MAX, Y_MAX);
+                drawChartGrid(svg);
+
+                drawCurve(svg, grahamOps,       N_MAX, Y_MAX, 'var(--accent-blue)');
+                drawCurve(svg, jarvisBestOps,   N_MAX, Y_MAX, 'var(--accent-green)');
+                drawCurve(svg, jarvisWorstOps,  N_MAX, Y_MAX, 'var(--accent-rose)');
+
+                drawCurrentDot(svg, currentN, actualOps, N_MAX, Y_MAX, activeAlgo);
+                drawLegend(svg);
+            };
+
+            window.updateChartDot = function(actualOps) {
+                const svg = document.getElementById('chart-svg');
+                if (!svg) return;
+                
+                const dotGroup = svg.getElementById('chart-dot');
+                if (!dotGroup) return;
+
+                // Clear the old dot
+                while (dotGroup.firstChild) dotGroup.removeChild(dotGroup.firstChild);
+                
+                const currentN = window.APP_STATE.rawPoints.length;
+                const activeAlgo = document.getElementById('btn-graham').classList.contains('active-algo') ? 'graham' : 'jarvis';
+                const N_MAX = Math.max(30, currentN + 10);
+                const Y_MAX = jarvisWorstOps(N_MAX);
+
+                drawCurrentDot(svg, currentN, actualOps, N_MAX, Y_MAX, activeAlgo);
+            };
+            
+            if (window.renderChart && window.APP_STATE && window.APP_STATE.rawPoints) {
+                const activeAlgo = document.getElementById('btn-graham').classList.contains('active-algo') ? 'graham' : 'jarvis';
+                window.renderChart(window.APP_STATE.rawPoints.length, 0, activeAlgo);
+            }
+        })();
+
+        // ── Floating Tooltip Engine ──
+        (() => {
+            const tip = document.createElement('div');
+            tip.id = 'floating-tooltip';
+            document.body.appendChild(tip);
+
+            document.addEventListener('mouseenter', (e) => {
+                const term = e.target.closest('.term');
+                if (!term) return;
+                const inner = term.querySelector('.term-tip');
+                if (!inner) return;
+
+                tip.textContent = inner.textContent;
+                tip.classList.add('visible');
+
+                const rect = term.getBoundingClientRect();
+                const tipW = tip.offsetWidth;
+                const tipH = tip.offsetHeight;
+
+                // Horizontal: center on term, clamp to viewport
+                let left = rect.left + rect.width / 2 - tipW / 2;
+                left = Math.max(8, Math.min(left, window.innerWidth - tipW - 8));
+
+                // Vertical: prefer above, fall below if not enough space
+                let top = rect.top - tipH - 8;
+                if (top < 8) top = rect.bottom + 8;
+
+                tip.style.left = left + 'px';
+                tip.style.top = top + 'px';
+            }, true);
+
+            document.addEventListener('mouseleave', (e) => {
+                const term = e.target.closest('.term');
+                if (!term) return;
+                tip.classList.remove('visible');
+            }, true);
+        })();
+    </script>
+</body>
+</html>
