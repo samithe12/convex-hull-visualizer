@@ -1449,7 +1449,7 @@
                         activePoints: [anchor.idx], comparingPoints: [a.idx, b.idx], hullPoints: [], rejectedPoints: [],
                         hullEdges: [], candidateEdge: null, rejectedEdge: null, stack: [],
                         pseudocodeLine: 4,
-                        explanation: `Sorting: P${a.idx} sits at angle ${angleA.toFixed(2)} rad from the anchor, P${b.idx} sits at ${angleB.toFixed(2)} rad. The smaller angle comes first — this orders all points in a counterclockwise sweep so the stack scan works correctly.`,
+                        explanation: `Sorting: P${a.idx} sits at angle ${(angleA * 180 / Math.PI).toFixed(1)}\u00b0 from the anchor, P${b.idx} sits at ${(angleB * 180 / Math.PI).toFixed(1)}\u00b0. The smaller angle comes first \u2014 this orders all points in a counterclockwise sweep so the stack scan works correctly.`,
                         comparisons, Comparisons
                     });
 
